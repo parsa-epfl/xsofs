@@ -1,0 +1,689 @@
+diff --git a/src/main/scala/system/SoC.scala b/src/main/scala/system/SoC.scala
+index a6ff93df2..063ae9aa2 100644
+--- a/src/main/scala/system/SoC.scala
++++ b/src/main/scala/system/SoC.scala
+@@ -21,7 +21,7 @@ import chisel3._
+ import chisel3.util._
+ import device.{DebugModule, TLPMA, TLPMAIO}
+ import freechips.rocketchip.devices.tilelink.{CLINT, CLINTParams, DevNullParams, PLICParams, TLError, TLPLIC}
+-import freechips.rocketchip.diplomacy.{AddressSet, IdRange, InModuleBody, LazyModule, LazyModuleImp, MemoryDevice, RegionType, SimpleDevice, TransferSizes}
++import freechips.rocketchip.diplomacy._
+ import freechips.rocketchip.interrupts.{IntSourceNode, IntSourcePortSimple}
+ import freechips.rocketchip.regmapper.{RegField, RegFieldAccessType, RegFieldDesc, RegFieldGroup}
+ import utils.{BinaryArbiter, TLEdgeBuffer}
+@@ -32,14 +32,37 @@ import top.BusPerfMonitor
+ import xiangshan.backend.fu.PMAConst
+ import huancun._
+ import huancun.debug.TLLogger
++import freechips.rocketchip.diplomacy.{Resource, ResourceBinding, ResourceInt, Binding}
+ 
+ case object SoCParamsKey extends Field[SoCParameters]
+ 
++object SoCResourceAnchors {
++  val chosen = new Device {
++    def describe(resources: ResourceBindings): Description = {
++      Description("chosen", Map(
++        "bootargs"    -> resources("bootargs").map(_.value),
++        "stdout-path" -> resources("stdout"  ).map(_.value)
++      ))
++    }
++  }
++
++  val reserved_memory = new Device { r =>
++    def describe(resources: ResourceBindings): Description = {
++      Description("reserved-memory", Map(
++        "#address-cells" -> resources("width").map(_.value),
++        "#size-cells"    -> resources("width").map(_.value),
++        "ranges"         -> Nil
++      ))
++    }
++  }
++}
++
+ case class SoCParameters
+ (
+   EnableILA: Boolean = false,
+   PAddrBits: Int = 36,
+   extIntrs: Int = 64,
++  timebase: Int = 10000000,
+   L3NBanks: Int = 4,
+   L3CacheParamsOpt: Option[HCCacheParameters] = Some(HCCacheParameters(
+     name = "l3",
+@@ -115,7 +138,6 @@ trait HaveSlaveAXI4Port {
+     AXI4UserYanker(Some(1)) :=
+     AXI4Fragmenter() :=
+     AXI4Buffer() :=
+-    AXI4Buffer() :=
+     AXI4IdIndexer(1) :=
+     l3FrontendAXI4Node
+   errorDevice.node := l3_xbar
+@@ -150,26 +172,24 @@ trait HaveAXI4MemPort {
+   val mem_xbar = TLXbar()
+   mem_xbar :=*
+     TLXbar() :=*
+-    TLBuffer.chainNode(2) :=*
++    TLBuffer() :=*
+     TLCacheCork() :=*
+     bankedNode
+ 
+   mem_xbar :=
+     TLWidthWidget(8) :=
+-    TLBuffer.chainNode(3, name = Some("PeripheralXbar_to_MemXbar_buffer")) :=
++    TLBuffer() :=
+     peripheralXbar
+ 
+   memAXI4SlaveNode :=
+     AXI4Buffer() :=
+-    AXI4Buffer() :=
+-    AXI4Buffer() :=
+-    AXI4IdIndexer(idBits = 14) :=
++    AXI4IdIndexer(idBits = 4) :=
+     AXI4UserYanker() :=
+     AXI4Deinterleaver(L3BlockSize) :=
+     TLToAXI4() :=
+-    TLSourceShrinker(64) :=
++    TLSourceShrinker(16) :=
+     TLWidthWidget(L3OuterBusWidth / 8) :=
+-    TLBuffer.chainNode(2) :=
++    TLBuffer() :=
+     mem_xbar
+ 
+   val memory = InModuleBody {
+@@ -181,7 +201,7 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
+   // on-chip devices: 0x3800_0000 - 0x3fff_ffff 0x0000_0000 - 0x0000_0fff
+   val onChipPeripheralRange = AddressSet(0x38000000L, 0x07ffffffL)
+   val uartRange = AddressSet(0x40600000, 0xf)
+-  val uartDevice = new SimpleDevice("serial", Seq("xilinx,uartlite"))
++  val uartDevice = new SimpleDevice("serial", Seq("xlnx,xps-uartlite-1.00.a"))
+   val uartParams = AXI4SlaveParameters(
+     address = Seq(uartRange),
+     regionType = RegionType.UNCACHED,
+@@ -189,6 +209,15 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
+     supportsWrite = TransferSizes(1, 8),
+     resources = uartDevice.reg
+   )
++
++  ResourceBinding {
++    // add interrupt
++    uartDevice.int.head.bind(this.plic.device, ResourceInt(1))
++
++    Resource(SoCResourceAnchors.chosen, "bootargs").bind(ResourceString("earlycon console=ttyUL0"))
++    Resource(SoCResourceAnchors.chosen, "stdout"  ).bind(ResourceAlias ( uartDevice.label))
++  }
++
+   val peripheralRange = AddressSet(
+     0x0, 0x7fffffff
+   ).subtract(onChipPeripheralRange).flatMap(x => x.subtract(uartRange))
+@@ -204,15 +233,12 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
+   )))
+ 
+   peripheralNode :=
+-    AXI4IdIndexer(idBits = 2) :=
+-    AXI4Buffer() :=
+-    AXI4Buffer() :=
+-    AXI4Buffer() :=
++    AXI4IdIndexer(idBits = 3) :=
+     AXI4Buffer() :=
+     AXI4UserYanker() :=
+     AXI4Deinterleaver(8) :=
+     TLToAXI4() :=
+-    TLBuffer.chainNode(3) :=
++    TLBuffer() :=
+     peripheralXbar
+ 
+   val peripheral = InModuleBody {
+@@ -235,23 +261,23 @@ class SoCMisc()(implicit p: Parameters) extends BaseSoC
+   val l3_mem_pmu = BusPerfMonitor(enable = !debugOpts.FPGAPlatform)
+ 
+   l3_in :*= TLEdgeBuffer(_ => true, Some("L3_in_buffer")) :*= l3_banked_xbar
+-  bankedNode :*= TLLogger("MEM_L3", !debugOpts.FPGAPlatform) :*= l3_mem_pmu :*= l3_out
++  bankedNode :*= TLLogger("MEM_L3", debugOpts.EnableTLLogger) :*= l3_mem_pmu :*= l3_out
+ 
+   if(soc.L3CacheParamsOpt.isEmpty){
+     l3_out :*= l3_in
+   }
+ 
+   for(port <- peripheral_ports) {
+-    peripheralXbar := TLBuffer.chainNode(2, Some("L2_to_L3_peripheral_buffer")) := port
++    peripheralXbar := TLBuffer() := port
+   }
+ 
+   for ((core_out, i) <- core_to_l3_ports.zipWithIndex){
+     l3_banked_xbar :=*
+-      TLLogger(s"L3_L2_$i", !debugOpts.FPGAPlatform) :=*
++      TLLogger(s"L3_L2_$i", debugOpts.EnableTLLogger) :=*
+       TLBuffer() :=
+       core_out
+   }
+-  l3_banked_xbar := TLBuffer.chainNode(2) := l3_xbar
++  l3_banked_xbar := TLBuffer() := l3_xbar
+ 
+   val clint = LazyModule(new CLINT(CLINTParams(0x38000000L), 8))
+   clint.node := peripheralXbar
+@@ -286,7 +312,7 @@ class SoCMisc()(implicit p: Parameters) extends BaseSoC
+ 
+   val pma = LazyModule(new TLPMA)
+   pma.node := 
+-    TLBuffer.chainNode(4) :=
++    TLBuffer() :=
+     peripheralXbar
+ 
+   lazy val module = new LazyModuleImp(this){
+diff --git a/src/main/scala/top/Top.scala b/src/main/scala/top/Top.scala
+index 3e1bdb1db..34e305d31 100644
+--- a/src/main/scala/top/Top.scala
++++ b/src/main/scala/top/Top.scala
+@@ -49,6 +49,7 @@ class XSTop()(implicit p: Parameters) extends BaseXSSoc() with HasSoCParameter
+     Resource(ResourceAnchors.root, "width").bind(width)
+     Resource(ResourceAnchors.soc, "width").bind(width)
+     Resource(ResourceAnchors.cpus, "width").bind(ResourceInt(1))
++    Resource(ResourceAnchors.cpus, "hertz").bind(ResourceInt(soc.timebase))
+     def bindManagers(xbar: TLNexusNode) = {
+       ManagerUnification(xbar.edges.in.head.manager.managers).foreach{ manager =>
+         manager.resources.foreach(r => r.bind(manager.toResource))
+@@ -56,6 +57,8 @@ class XSTop()(implicit p: Parameters) extends BaseXSSoc() with HasSoCParameter
+     }
+     bindManagers(misc.l3_xbar.asInstanceOf[TLNexusNode])
+     bindManagers(misc.peripheralXbar.asInstanceOf[TLNexusNode])
++
++    Resource(SoCResourceAnchors.reserved_memory, "width").bind(width)
+   }
+ 
+   println(s"FPGASoC cores: $NumCores banks: $L3NBanks block size: $L3BlockSize bus size: $L3OuterBusWidth")
+@@ -98,7 +101,7 @@ class XSTop()(implicit p: Parameters) extends BaseXSSoc() with HasSoCParameter
+ 
+   l3cacheOpt match {
+     case Some(l3) =>
+-      misc.l3_out :*= l3.node :*= TLBuffer.chainNode(2) :*= misc.l3_banked_xbar
++      misc.l3_out :*= l3.node :*= TLBuffer() :*= misc.l3_banked_xbar
+     case None =>
+   }
+ 
+diff --git a/src/main/scala/utils/ResetGen.scala b/src/main/scala/utils/ResetGen.scala
+index e80086240..90e558417 100644
+--- a/src/main/scala/utils/ResetGen.scala
++++ b/src/main/scala/utils/ResetGen.scala
+@@ -24,7 +24,7 @@ class ResetGen extends Module {
+     val out = Output(Bool())
+   })
+ 
+-  io.out := RegNext(RegNext(reset.asBool))
++  io.out := RegNext(RegNext(reset.asBool, true.B), true.B)
+ }
+ 
+ trait ResetNode
+@@ -42,7 +42,7 @@ object ResetGen {
+           mod.reset := reset
+         case ResetGenNode(children) =>
+           val next_rst = Wire(Bool())
+-          withReset(reset){
++          withReset(reset.asAsyncReset) {
+             val resetGen = Module(new ResetGen)
+             next_rst := resetGen.io.out
+           }
+@@ -56,7 +56,7 @@ object ResetGen {
+     resetReg.foreach(_ := reset)
+     for ((resetLevel, i) <- resetChain.zipWithIndex) {
+       if (!sim) {
+-        withReset(resetReg(i)) {
++        withReset(resetReg(i).asAsyncReset) {
+           val resetGen = Module(new ResetGen)
+           resetReg(i + 1) := resetGen.io.out
+         }
+diff --git a/src/main/scala/utils/SRAMTemplate.scala b/src/main/scala/utils/SRAMTemplate.scala
+index 3ce5fde17..060675708 100644
+--- a/src/main/scala/utils/SRAMTemplate.scala
++++ b/src/main/scala/utils/SRAMTemplate.scala
+@@ -98,7 +98,6 @@ class SRAMTemplate[T <: Data](gen: T, set: Int, way: Int = 1,
+   })
+ 
+   val wordType = UInt(gen.getWidth.W)
+-  val array = SyncReadMem(set, Vec(way, wordType))
+   val (resetState, resetSet) = (WireInit(false.B), WireInit(0.U))
+ 
+   if (shouldReset) {
+@@ -116,9 +115,20 @@ class SRAMTemplate[T <: Data](gen: T, set: Int, way: Int = 1,
+   val setIdx = Mux(resetState, resetSet, io.w.req.bits.setIdx)
+   val wdata = VecInit(Mux(resetState, 0.U.asTypeOf(Vec(way, gen)), io.w.req.bits.data).map(_.asTypeOf(wordType)))
+   val waymask = Mux(resetState, Fill(way, "b1".U), io.w.req.bits.waymask.getOrElse("b1".U))
+-  when (wen) { array.write(setIdx, wdata, waymask.asBools) }
+-
+-  val raw_rdata = array.read(io.r.req.bits.setIdx, realRen)
++  val raw_rdata = Wire(Vec(way, wordType))
++
++  huancun.utils.InstantiateSRAM(singlePort,
++                                log2Ceil(set),
++                                way * gen.getWidth,
++                                way,
++                                clock,
++                                realRen,
++                                io.r.req.bits.setIdx,
++                                raw_rdata,
++                                wen,
++                                setIdx,
++                                wdata,
++                                waymask)
+ 
+   // bypass for dual-port SRAMs
+   require(!bypassWrite || bypassWrite && !singlePort)
+@@ -141,8 +151,7 @@ class SRAMTemplate[T <: Data](gen: T, set: Int, way: Int = 1,
+   }
+ 
+   // hold read data for SRAMs
+-  val rdata = (if (holdRead) HoldUnless(mem_rdata, RegNext(realRen))
+-              else mem_rdata).map(_.asTypeOf(gen))
++  val rdata = mem_rdata.map(_.asTypeOf(gen))
+ 
+   io.r.resp.data := VecInit(rdata)
+   io.r.req.ready := !resetState && (if (singlePort) !wen else true.B)
+diff --git a/src/main/scala/xiangshan/Bundle.scala b/src/main/scala/xiangshan/Bundle.scala
+index b1cd670b9..5db3f28da 100644
+--- a/src/main/scala/xiangshan/Bundle.scala
++++ b/src/main/scala/xiangshan/Bundle.scala
+@@ -423,7 +423,7 @@ class TlbSatpBundle(implicit p: Parameters) extends SatpStruct {
+     val sa = satp_value.asTypeOf(new SatpStruct)
+     mode := sa.mode
+     asid := sa.asid
+-    ppn := Cat(0.U(44-PAddrBits), sa.ppn(PAddrBits-1, 0)).asUInt()
++    ppn := Cat(0.U(56-PAddrBits), sa.ppn(PAddrBits-13, 0)).asUInt()
+     changed := DataChanged(sa.asid) // when ppn is changed, software need do the flush
+   }
+ }
+diff --git a/src/main/scala/xiangshan/Parameters.scala b/src/main/scala/xiangshan/Parameters.scala
+index 0a3463bf2..4ade613e0 100644
+--- a/src/main/scala/xiangshan/Parameters.scala
++++ b/src/main/scala/xiangshan/Parameters.scala
+@@ -266,6 +266,7 @@ case class DebugOptions
+   AlwaysBasicDiff: Boolean = true,
+   EnableDebug: Boolean = false,
+   EnablePerfDebug: Boolean = true,
++  EnableTLLogger: Boolean = false,
+   UseDRAMSim: Boolean = false
+ )
+ 
+diff --git a/src/main/scala/xiangshan/XSDts.scala b/src/main/scala/xiangshan/XSDts.scala
+index b22a021f3..a301b0489 100644
+--- a/src/main/scala/xiangshan/XSDts.scala
++++ b/src/main/scala/xiangshan/XSDts.scala
+@@ -31,7 +31,7 @@ trait HasXSDts {
+       "status" -> "okay".asProperty,
+       "clock-frequency" -> 0.asProperty,
+       "riscv,isa" -> "rv64imafdc".asProperty,
+-      "timebase-frequency" -> 1000000.asProperty
++      "timebase-frequency" -> 0.asProperty
+     )
+ 
+     def tileProperties: PropertyMap = {
+@@ -111,7 +111,7 @@ trait HasXSDts {
+       7,    // mtip  [clint]
+       11,   // meip  [plic]
+       9,    // seip  [plic]
+-      65535 // debug [debug]
++      12    // debug [debug]
+     )
+     assert(int_resources.size == int_ids.size)
+     for((resources, id) <- int_resources.zip(int_ids)){
+diff --git a/src/main/scala/xiangshan/XSTile.scala b/src/main/scala/xiangshan/XSTile.scala
+index ea60e968b..bcf4302b8 100644
+--- a/src/main/scala/xiangshan/XSTile.scala
++++ b/src/main/scala/xiangshan/XSTile.scala
+@@ -3,7 +3,7 @@ package xiangshan
+ import chisel3._
+ import chipsalliance.rocketchip.config.{Config, Parameters}
+ import chisel3.util.{Valid, ValidIO}
+-import freechips.rocketchip.diplomacy.{BundleBridgeSink, LazyModule, LazyModuleImp, LazyModuleImpLike}
++import freechips.rocketchip.diplomacy.{BundleBridgeSink, LazyModule, LazyModuleImp, LazyModuleImpLike, ResourceBinding}
+ import freechips.rocketchip.interrupts.{IntSinkNode, IntSinkPortParameters, IntSinkPortSimple}
+ import freechips.rocketchip.tile.{BusErrorUnit, BusErrorUnitParams, BusErrors}
+ import freechips.rocketchip.tilelink.{BankBinder, TLBuffer, TLIdentityNode, TLNode, TLTempNode, TLXbar}
+@@ -42,10 +42,10 @@ class XSTileMisc()(implicit p: Parameters) extends LazyModule
+   val mmio_port = TLIdentityNode() // to L3
+   val memory_port = TLIdentityNode()
+   val beu = LazyModule(new BusErrorUnit(
+-    new XSL1BusErrors(), BusErrorUnitParams(0x38010000)
++    new XSL1BusErrors(), BusErrorUnitParams(0x38010000 + coreParams.HartId * 0x1000)
+   ))
+   val busPMU = BusPerfMonitor(enable = !debugOpts.FPGAPlatform)
+-  val l1d_logger = TLLogger(s"L2_L1D_${coreParams.HartId}", !debugOpts.FPGAPlatform)
++  val l1d_logger = TLLogger(s"L2_L1D_${coreParams.HartId}", debugOpts.EnableTLLogger)
+   val l2_binder = coreParams.L2CacheParamsOpt.map(_ => BankBinder(coreParams.L2NBanks, 64))
+ 
+   val i_mmio_port = TLTempNode()
+@@ -56,20 +56,26 @@ class XSTileMisc()(implicit p: Parameters) extends LazyModule
+ 
+   l2_binder match {
+     case Some(binder) =>
+-      memory_port := TLBuffer.chainNode(2) := TLClientsMerger() := TLXbar() :=* binder
++      memory_port := TLBuffer() := TLClientsMerger() := TLXbar() :=* binder
+     case None =>
+       memory_port := l1_xbar
+   }
+ 
+-  mmio_xbar := TLBuffer.chainNode(2) := i_mmio_port
+-  mmio_xbar := TLBuffer.chainNode(2) := d_mmio_port
+-  beu.node := TLBuffer.chainNode(1) := mmio_xbar
++  mmio_xbar := TLBuffer() := i_mmio_port
++  mmio_xbar := TLBuffer() := d_mmio_port
++  beu.node  := TLBuffer() := mmio_xbar
+   mmio_port := TLBuffer() := mmio_xbar
+ 
+   lazy val module = new LazyModuleImp(this){
+     val beu_errors = IO(Input(chiselTypeOf(beu.module.io.errors)))
+     beu.module.io.errors <> beu_errors
+   }
++
++  ResourceBinding {
++    beu.node.edges.in.head.manager.managers.foreach { m =>
++      m.resources.foreach(_.bind(m.toResource))
++    }
++  }
+ }
+ 
+ class XSTile()(implicit p: Parameters) extends LazyModule
+@@ -101,14 +107,14 @@ class XSTile()(implicit p: Parameters) extends LazyModule
+ 
+   val l1i_to_l2_buffer = LazyModule(new TLBuffer)
+   misc.busPMU :=
+-    TLLogger(s"L2_L1I_${coreParams.HartId}", !debugOpts.FPGAPlatform) :=
++    TLLogger(s"L2_L1I_${coreParams.HartId}", debugOpts.EnableTLLogger) :=
+     l1i_to_l2_buffer.node :=
+     core.frontend.icache.clientNode
+ 
+   val ptw_to_l2_bufferOpt = if (!coreParams.softPTW) {
+     val buffer = LazyModule(new TLBuffer)
+     misc.busPMU :=
+-      TLLogger(s"L2_PTW_${coreParams.HartId}", !debugOpts.FPGAPlatform) :=
++      TLLogger(s"L2_PTW_${coreParams.HartId}", debugOpts.EnableTLLogger) :=
+       buffer.node :=
+       core.ptw_to_l2_buffer.node
+     Some(buffer)
+diff --git a/src/main/scala/xiangshan/backend/MemBlock.scala b/src/main/scala/xiangshan/backend/MemBlock.scala
+index 00fd571a6..9ceb31d22 100644
+--- a/src/main/scala/xiangshan/backend/MemBlock.scala
++++ b/src/main/scala/xiangshan/backend/MemBlock.scala
+@@ -142,7 +142,7 @@ class MemBlockImp(outer: MemBlock) extends LazyModuleImp(outer)
+   atomicsUnit.io.out.ready := ldOut0.ready
+   loadUnits.head.io.ldout.ready := ldOut0.ready
+   when(atomicsUnit.io.out.valid){
+-    ldOut0.bits.uop.cf.exceptionVec := 0.U(16.W).asBools // exception will be writebacked via store wb port
++    ldOut0.bits.uop.cf.exceptionVec := 0.U(ldOut0.bits.uop.cf.exceptionVec.size.W).asBools // exception will be writebacked via store wb port
+   }
+ 
+   val ldExeWbReqs = ldOut0 +: loadUnits.tail.map(_.io.ldout)
+diff --git a/src/main/scala/xiangshan/backend/Scheduler.scala b/src/main/scala/xiangshan/backend/Scheduler.scala
+index 2ee030ae1..3773b1a5b 100644
+--- a/src/main/scala/xiangshan/backend/Scheduler.scala
++++ b/src/main/scala/xiangshan/backend/Scheduler.scala
+@@ -522,12 +522,14 @@ class SchedulerImp(outer: Scheduler) extends LazyModuleImp(outer) with HasXSPara
+   if ((env.AlwaysBasicDiff || env.EnableDifftest) && intRfConfig._1) {
+     val difftest = Module(new DifftestArchIntRegState)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := io.hartId
+     difftest.io.gpr := RegNext(RegNext(VecInit(intRfReadData.takeRight(32))))
+   }
+   if ((env.AlwaysBasicDiff || env.EnableDifftest) && fpRfConfig._1) {
+     val difftest = Module(new DifftestArchFpRegState)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := io.hartId
+     difftest.io.fpr := RegNext(RegNext(VecInit(fpRfReadData.takeRight(32))))
+   }
+diff --git a/src/main/scala/xiangshan/backend/exu/WbArbiter.scala b/src/main/scala/xiangshan/backend/exu/WbArbiter.scala
+index 58d06b683..0ae88d463 100644
+--- a/src/main/scala/xiangshan/backend/exu/WbArbiter.scala
++++ b/src/main/scala/xiangshan/backend/exu/WbArbiter.scala
+@@ -305,6 +305,7 @@ class WbArbiterWrapper(
+       intArbiter.module.io.out.foreach(out => {
+         val difftest = Module(new DifftestIntWriteback)
+         difftest.io.clock := clock
++        difftest.io.reset := reset
+         difftest.io.coreid := io.hartId
+         difftest.io.valid := out.valid && out.bits.uop.ctrl.rfWen
+         difftest.io.dest := out.bits.uop.pdest
+@@ -326,6 +327,7 @@ class WbArbiterWrapper(
+       fpArbiter.module.io.out.foreach(out => {
+         val difftest = Module(new DifftestFpWriteback)
+         difftest.io.clock := clock
++        difftest.io.reset := reset
+         difftest.io.coreid := io.hartId
+         difftest.io.valid := out.valid // all fp instr will write fp rf
+         difftest.io.dest := out.bits.uop.pdest
+diff --git a/src/main/scala/xiangshan/backend/fu/CSR.scala b/src/main/scala/xiangshan/backend/fu/CSR.scala
+index 6cae0f9e5..4ef89aef1 100644
+--- a/src/main/scala/xiangshan/backend/fu/CSR.scala
++++ b/src/main/scala/xiangshan/backend/fu/CSR.scala
+@@ -457,7 +457,7 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
+   // val satpMask = "h80000fffffffffff".U(XLEN.W) // disable asid, mode can only be 8 / 0
+   // TODO: use config to control the length of asid
+   // val satpMask = "h8fffffffffffffff".U(XLEN.W) // enable asid, mode can only be 8 / 0
+-  val satpMask = Cat("h8".U(Satp_Mode_len.W), satp_part_wmask(Satp_Asid_len, AsidLength), satp_part_wmask(Satp_Addr_len, PAddrBits-12))
++  val satpMask = Cat("hf".U(Satp_Mode_len.W), satp_part_wmask(Satp_Asid_len, AsidLength), satp_part_wmask(Satp_Addr_len, PAddrBits-12))
+   val sepc = RegInit(UInt(XLEN.W), 0.U)
+   // Page 60 in riscv-priv: The low bit of sepc (sepc[0]) is always zero.
+   val sepcMask = ~(0x1.U(XLEN.W))
+@@ -1168,6 +1168,7 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
+   if (env.AlwaysBasicDiff || env.EnableDifftest) {
+     val difftest = Module(new DifftestArchEvent)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := csrio.hartId
+     difftest.io.intrNO := RegNext(RegNext(RegNext(difftestIntrNO)))
+     difftest.io.cause  := RegNext(RegNext(RegNext(Mux(csrio.exception.valid, causeNO, 0.U))))
+@@ -1181,6 +1182,7 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
+   if (env.AlwaysBasicDiff || env.EnableDifftest) {
+     val difftest = Module(new DifftestCSRState)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := csrio.hartId
+     difftest.io.priviledgeMode := priviledgeMode
+     difftest.io.mstatus := mstatus
+@@ -1205,6 +1207,7 @@ class CSR(implicit p: Parameters) extends FunctionUnit with HasCSRConst with PMP
+   if(env.AlwaysBasicDiff || env.EnableDifftest) {
+     val difftest = Module(new DifftestDebugMode)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := csrio.hartId
+     difftest.io.debugMode := debugMode
+     difftest.io.dcsr := dcsr
+diff --git a/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala b/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
+index 37afa79a7..fdfa67721 100644
+--- a/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
++++ b/src/main/scala/xiangshan/backend/fu/fpu/FMA.scala
+@@ -128,7 +128,7 @@ class FADD_pipe(val addLat: Int = 2)(implicit p: Parameters) extends FPUPipeline
+   val stages = FPU.ftypes.zipWithIndex.map{
+     case (t, i) =>
+       val s1 = Module(new FCMA_ADD_s1(t.expWidth, 2*t.precision, t.precision))
+-      val s2 = Module(new FCMA_ADD_s2(t.expWidth, t.precision))
++      val s2 = Module(new FCMA_ADD_s2(t.expWidth, t.precision, t.precision))
+       val in1 = Mux(fma,
+         mulProd(i).fp_prod.asUInt,
+         Cat(src1(t.len - 1, 0), 0.U(t.precision.W))
+diff --git a/src/main/scala/xiangshan/backend/rob/Rob.scala b/src/main/scala/xiangshan/backend/rob/Rob.scala
+index c6aa67c98..b1f4afecb 100644
+--- a/src/main/scala/xiangshan/backend/rob/Rob.scala
++++ b/src/main/scala/xiangshan/backend/rob/Rob.scala
+@@ -1020,6 +1020,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
+     for (i <- 0 until CommitWidth) {
+       val difftest = Module(new DifftestInstrCommit)
+       difftest.io.clock    := clock
++      difftest.io.reset    := reset
+       difftest.io.coreid   := io.hartId
+       difftest.io.index    := i.U
+ 
+@@ -1078,6 +1079,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
+ 
+       val difftest = Module(new DifftestBasicInstrCommit)
+       difftest.io.clock   := clock
++      difftest.io.reset   := reset
+       difftest.io.coreid  := io.hartId
+       difftest.io.index   := i.U
+       difftest.io.valid   := RegNext(RegNext(RegNext(io.commits.commitValid(i) && io.commits.isCommit)))
+@@ -1095,6 +1097,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
+     for (i <- 0 until CommitWidth) {
+       val difftest = Module(new DifftestLoadEvent)
+       difftest.io.clock  := clock
++      difftest.io.reset  := reset
+       difftest.io.coreid := io.hartId
+       difftest.io.index  := i.U
+ 
+@@ -1122,6 +1125,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
+     val trapPC = SignExt(PriorityMux(wpc.zip(trapVec).map(x => x._2 ->x._1)), XLEN)
+     val difftest = Module(new DifftestTrapEvent)
+     difftest.io.clock    := clock
++    difftest.io.reset    := reset
+     difftest.io.coreid   := io.hartId
+     difftest.io.valid    := hitTrap
+     difftest.io.code     := trapCode
+@@ -1141,6 +1145,7 @@ class RobImp(outer: Rob)(implicit p: Parameters) extends LazyModuleImp(outer)
+     val hitTrap = trapVec.reduce(_||_)
+     val difftest = Module(new DifftestBasicTrapEvent)
+     difftest.io.clock    := clock
++    difftest.io.reset    := reset
+     difftest.io.coreid   := io.hartId
+     difftest.io.valid    := hitTrap
+     difftest.io.cycleCnt := timer
+diff --git a/src/main/scala/xiangshan/cache/dcache/mainpipe/MissQueue.scala b/src/main/scala/xiangshan/cache/dcache/mainpipe/MissQueue.scala
+index 26d9d9c99..9323c6e85 100644
+--- a/src/main/scala/xiangshan/cache/dcache/mainpipe/MissQueue.scala
++++ b/src/main/scala/xiangshan/cache/dcache/mainpipe/MissQueue.scala
+@@ -567,6 +567,7 @@ class MissQueue(edge: TLEdgeOut)(implicit p: Parameters) extends DCacheModule wi
+   if (env.EnableDifftest) {
+     val difftest = Module(new DifftestRefillEvent)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := io.hartId
+     difftest.io.cacheid := 1.U
+     difftest.io.valid := io.refill_to_ldq.valid && io.refill_to_ldq.bits.hasdata && io.refill_to_ldq.bits.refill_done
+diff --git a/src/main/scala/xiangshan/cache/mmu/TLB.scala b/src/main/scala/xiangshan/cache/mmu/TLB.scala
+index 9b5fa743b..c0007eaa3 100644
+--- a/src/main/scala/xiangshan/cache/mmu/TLB.scala
++++ b/src/main/scala/xiangshan/cache/mmu/TLB.scala
+@@ -128,7 +128,7 @@ class TLB(Width: Int, Block: Seq[Boolean], q: TLBParameters)(implicit p: Paramet
+     XSDebug(req_out_v(i), p"(${i.U}) hit:${hit} miss:${miss} ppn:${Hexadecimal(ppn)} perm:${perm}\n")
+ 
+     val paddr = Cat(ppn, get_off(req_out(i).vaddr))
+-    val vaddr = SignExt(req_out(i).vaddr, PAddrBits)
++    val vaddr = Mux(vmEnable, SignExt(req_out(i).vaddr, PAddrBits), ZeroExt(req_out(i).vaddr, PAddrBits))
+ 
+     resp(i).bits.paddr := Mux(vmEnable, paddr, vaddr)
+     resp(i).bits.miss := miss
+diff --git a/src/main/scala/xiangshan/frontend/BPU.scala b/src/main/scala/xiangshan/frontend/BPU.scala
+index 56c9ae650..1c0b15895 100644
+--- a/src/main/scala/xiangshan/frontend/BPU.scala
++++ b/src/main/scala/xiangshan/frontend/BPU.scala
+@@ -213,7 +213,7 @@ abstract class BasePredictor(implicit p: Parameters) extends XSModule
+   val s3_pc       = RegEnable(s2_pc, io.s2_fire)
+ 
+   when (RegNext(RegNext(reset.asBool) && !reset.asBool)) {
+-    s1_pc := reset_vector
++    s1_pc := reset_vector.pad(VAddrBits)(VAddrBits - 1, 0)
+   }
+ 
+   io.out.resp.s1.pc := s1_pc
+@@ -347,7 +347,7 @@ class Predictor(implicit p: Parameters) extends XSModule with HasBPUConst with H
+ 
+   s1_components_ready := predictors.io.s1_ready
+   s1_ready := s1_fire || !s1_valid
+-  s0_fire := !reset.asBool && s1_components_ready && s1_ready
++  s0_fire := DelayN(!reset.asBool, 2) && s1_components_ready && s1_ready
+   predictors.io.s0_fire := s0_fire
+ 
+   s2_components_ready := predictors.io.s2_ready
+diff --git a/src/main/scala/xiangshan/frontend/icache/ICacheMissUnit.scala b/src/main/scala/xiangshan/frontend/icache/ICacheMissUnit.scala
+index 1e16860f7..e79da98e8 100644
+--- a/src/main/scala/xiangshan/frontend/icache/ICacheMissUnit.scala
++++ b/src/main/scala/xiangshan/frontend/icache/ICacheMissUnit.scala
+@@ -364,6 +364,7 @@ class ICacheMissUnit(edge: TLEdgeOut)(implicit p: Parameters) extends ICacheMiss
+   if (env.EnableDifftest) {
+     val difftest = Module(new DifftestRefillEvent)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := io.hartId
+     difftest.io.cacheid := 0.U
+     difftest.io.valid := refill_arb.io.out.valid
+diff --git a/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala b/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala
+index 08f3bf81b..16feb7eff 100644
+--- a/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala
++++ b/src/main/scala/xiangshan/mem/lsqueue/LoadQueue.scala
+@@ -329,9 +329,11 @@ class LoadQueue(implicit p: Parameters) extends XSModule
+   val loadWbSel = Wire(Vec(LoadPipelineWidth, UInt(log2Up(LoadQueueSize).W))) // index selected last cycle
+   val loadWbSelV = Wire(Vec(LoadPipelineWidth, Bool())) // index selected in last cycle is valid
+ 
++  val needCancel = Wire(Vec(LoadQueueSize, Bool()))
++
+   val loadWbSelVec = VecInit((0 until LoadQueueSize).map(i => {
+     // allocated(i) && !writebacked(i) && (datavalid(i) || refilling(i))
+-    allocated(i) && !writebacked(i) && datavalid(i) // query refilling will cause bad timing
++    allocated(i) && !writebacked(i) && datavalid(i) && !needCancel(i) // query refilling will cause bad timing
+   })).asUInt() // use uint instead vec to reduce verilog lines
+   val remDeqMask = Seq.tabulate(LoadPipelineWidth)(getRemBits(deqMask)(_))
+   // generate lastCycleSelect mask
+@@ -820,7 +822,6 @@ class LoadQueue(implicit p: Parameters) extends XSModule
+ 
+   // misprediction recovery / exception redirect
+   // invalidate lq term using robIdx
+-  val needCancel = Wire(Vec(LoadQueueSize, Bool()))
+   for (i <- 0 until LoadQueueSize) {
+     needCancel(i) := uop(i).robIdx.needFlush(io.brqRedirect) && allocated(i)
+     when (needCancel(i)) {
+diff --git a/src/main/scala/xiangshan/mem/lsqueue/StoreQueue.scala b/src/main/scala/xiangshan/mem/lsqueue/StoreQueue.scala
+index 8889080b3..bd02eba39 100644
+--- a/src/main/scala/xiangshan/mem/lsqueue/StoreQueue.scala
++++ b/src/main/scala/xiangshan/mem/lsqueue/StoreQueue.scala
+@@ -561,12 +561,13 @@ class StoreQueue(implicit p: Parameters) extends XSModule
+   if (env.EnableDifftest) {
+     for (i <- 0 until EnsbufferWidth) {
+       val storeCommit = io.sbuffer(i).fire()
+-      val waddr = SignExt(io.sbuffer(i).bits.addr, 64)
++      val waddr = ZeroExt(io.sbuffer(i).bits.addr, 64)
+       val wdata = io.sbuffer(i).bits.data & MaskExpand(io.sbuffer(i).bits.mask)
+       val wmask = io.sbuffer(i).bits.mask
+ 
+       val difftest = Module(new DifftestStoreEvent)
+       difftest.io.clock       := clock
++      difftest.io.reset       := reset
+       difftest.io.coreid      := io.hartId
+       difftest.io.index       := i.U
+       difftest.io.valid       := RegNext(RegNext(storeCommit))
+diff --git a/src/main/scala/xiangshan/mem/pipeline/AtomicsUnit.scala b/src/main/scala/xiangshan/mem/pipeline/AtomicsUnit.scala
+index ffd9807c8..55b21e95c 100644
+--- a/src/main/scala/xiangshan/mem/pipeline/AtomicsUnit.scala
++++ b/src/main/scala/xiangshan/mem/pipeline/AtomicsUnit.scala
+@@ -431,6 +431,7 @@ class AtomicsUnit(implicit p: Parameters) extends XSModule with MemoryOpConstant
+   if (env.EnableDifftest) {
+     val difftest = Module(new DifftestAtomicEvent)
+     difftest.io.clock      := clock
++    difftest.io.reset      := reset
+     difftest.io.coreid     := io.hartId
+     difftest.io.atomicResp := (state === s_cache_resp_latch && data_valid)
+     difftest.io.atomicAddr := paddr_reg
+@@ -444,6 +445,7 @@ class AtomicsUnit(implicit p: Parameters) extends XSModule with MemoryOpConstant
+     val uop = io.out.bits.uop
+     val difftest = Module(new DifftestLrScEvent)
+     difftest.io.clock := clock
++    difftest.io.reset := reset
+     difftest.io.coreid := io.hartId
+     difftest.io.valid := io.out.fire &&
+       (uop.ctrl.fuOpType === LSUOpType.sc_d || uop.ctrl.fuOpType === LSUOpType.sc_w)
+diff --git a/src/main/scala/xiangshan/mem/sbuffer/Sbuffer.scala b/src/main/scala/xiangshan/mem/sbuffer/Sbuffer.scala
+index 711a6134a..f02160f26 100644
+--- a/src/main/scala/xiangshan/mem/sbuffer/Sbuffer.scala
++++ b/src/main/scala/xiangshan/mem/sbuffer/Sbuffer.scala
+@@ -30,7 +30,7 @@ class SbufferFlushBundle extends Bundle {
+ }
+ 
+ trait HasSbufferConst extends HasXSParameter {
+-  val EvictCycles = 1 << 20
++  val EvictCycles = 1 << 8
+   val SbufferReplayDelayCycles = 16
+   require(isPow2(EvictCycles))
+   val EvictCountBits = log2Up(EvictCycles+1)
+@@ -552,6 +552,7 @@ class Sbuffer(implicit p: Parameters) extends DCacheModule with HasSbufferConst
+       val difftest = Module(new DifftestSbufferEvent)
+       val dcache_resp_id = resp.bits.id
+       difftest.io.clock := clock
++      difftest.io.reset := reset
+       difftest.io.coreid := io.hartId
+       difftest.io.index := index.U
+       difftest.io.sbufferResp := RegNext(resp.fire())

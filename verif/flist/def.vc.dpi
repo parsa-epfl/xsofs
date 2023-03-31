@@ -1,0 +1,3 @@
+$VERIF/../repo/rocket/src/main/resources/csrc/remote_bitbang.cc
+$VERIF/../repo/rocket/src/main/resources/csrc/SimJTAG.cc
+$VERIF/src/mem.cpp

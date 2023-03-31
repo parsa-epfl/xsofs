@@ -1,0 +1,18 @@
+// TODO: check whether these are reasonable
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
++define+RANDOMIZE_DELAY=0.1
++define+STOP_COND=tb.init_en
++define+PRINTF_COND=tb.init_en
+
++libext+.v+.sv
+-y $VERIF/../repo/rocket/src/main/resources/vsrc
+-y $VERIF/../$GEN
+-y $VERIF/../src
+-y $VERIF/src
+
+$VERIF/../$GEN/Dut.sv
+$VERIF/src/tb.sv
+
+-f $VERIF/flist/def.vc.dpi

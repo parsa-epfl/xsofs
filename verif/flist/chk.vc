@@ -1,0 +1,4 @@
+$VERIF/src/diff.cpp
+$VERIF/../$GEN/Dut.cpp
+
+$DIFF_HOME/build/difftest.so

@@ -1,0 +1,30 @@
+[submodule "repo/xiangshan"]
+	path = repo/xiangshan
+	url = https://github.com/OpenXiangShan/XiangShan.git
+[submodule "repo/huancun"]
+	path = repo/huancun
+	url = https://github.com/OpenXiangShan/Huancun.git
+[submodule "repo/fudian"]
+	path = repo/fudian
+	url = https://github.com/OpenXiangShan/Fudian.git
+[submodule "repo/rocket"]
+	path = repo/rocket
+	url = https://github.com/OpenXiangShan/rocket-chip.git
+[submodule "repo/config"]
+	path = repo/config
+	url = https://github.com/chipsalliance/api-config-chipsalliance.git
+[submodule "repo/hard_float"]
+	path = repo/hard_float
+	url = https://github.com/ucb-bar/berkeley-hardfloat.git
+[submodule "repo/difftest"]
+	path = repo/difftest
+	url = https://github.com/OpenXiangShan/difftest.git
+[submodule "repo/firesim"]
+	path = repo/firesim
+	url = https://github.com/firesim/firesim.git
+[submodule "repo/aws_fpga"]
+	path = repo/aws_fpga
+	url = https://github.com/aws/aws-fpga.git
+[submodule "repo/nemu"]
+	path = repo/nemu
+	url = https://github.com/OpenXiangShan/NEMU.git

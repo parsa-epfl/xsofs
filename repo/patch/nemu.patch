@@ -1,0 +1,1176 @@
+diff --git a/Makefile b/Makefile
+index 77709cef..9388ed58 100644
+--- a/Makefile
++++ b/Makefile
+@@ -28,7 +28,7 @@ remove_quote = $(patsubst "%",%,$(1))
+ 
+ ISA    ?= $(if $(CONFIG_ISA),$(call remove_quote,$(CONFIG_ISA)),x86)
+ CFLAGS += -D__ISA__=$(ISA)
+-# CFLAGS += -g
++CFLAGS += -g
+ INC_DIR += $(NEMU_HOME)/src/isa/$(ISA)/include
+ DIRS-y += src/isa/$(ISA)
+ 
+@@ -72,7 +72,9 @@ LDFLAGS += $(CFLAGS_BUILD)
+ 
+ NAME  = nemu-$(ENGINE)
+ 
++ifdef CONFIG_MEM_COMPRESS
+ LDFLAGS += -lz
++endif
+ 
+ ifndef CONFIG_SHARE
+ LDFLAGS += -lreadline -ldl -pie
+@@ -80,7 +82,7 @@ else
+ SHARE = 1
+ endif
+ 
+-ifdef CONFIG_DEVICE
++ifdef CONFIG_HAS_KEYBOARD
+ LDFLAGS += -lSDL2
+ endif
+ 
+diff --git a/configs/riscv64-dual-xs-ref_defconfig b/configs/riscv64-dual-xs-ref_defconfig
+index aa76b156..10c3b08d 100644
+--- a/configs/riscv64-dual-xs-ref_defconfig
++++ b/configs/riscv64-dual-xs-ref_defconfig
+@@ -14,6 +14,8 @@ CONFIG_ISA64=y
+ # ISA-dependent Options for riscv64
+ #
+ CONFIG_CLINT_MMIO=0x38000000
++CONFIG_PLIC_MMIO_BASE=0x3c000000
++CONFIG_PLIC_MMIO_SIZE=0x400000
+ CONFIG_MULTICORE_DIFF=y
+ CONFIG_RVB=y
+ CONFIG_RVK=y
+@@ -21,6 +23,9 @@ CONFIG_RVK=y
+ CONFIG_RV_PMP_CSR=y
+ CONFIG_RV_PMP_CHECK=y
+ CONFIG_RV_SVINVAL=y
++CONFIG_MISA_UNCHANGEABLE=y
++CONFIG_RV_ARCH_CSRS=y
++CONFIG_USE_XS_ARCH_CSRS=y
+ # end of ISA-dependent Options for riscv64
+ 
+ CONFIG_ENGINE_INTERPRETER=y
+@@ -48,29 +53,41 @@ CONFIG_CC_DEBUG=y
+ #
+ # Testing and Debugging
+ #
++# CONFIG_DEBUG is not set
+ CONFIG_DIFFTEST_REF_PATH="none"
+ CONFIG_DIFFTEST_REF_NAME="none"
+ # CONFIG_DETERMINISTIC is not set
+ # CONFIG_IQUEUE is not set
++# CONFIG_MEMLOG is not set
++# CONFIG_TRANSLOG is not set
++# CONFIG_EXITLOG is not set
++# CONFIG_TRACE_INST is not set
++# CONFIG_TRACE_BB is not set
+ # end of Testing and Debugging
+ 
+ #
+ # Memory Configuration
+ #
+-CONFIG_MBASE=0x80000000
+-CONFIG_MSIZE=0x40000000
++CONFIG_MBASE=0x080000000
++CONFIG_MSIZE=0xf80000000
++CONFIG_PADDRBITS=36
+ CONFIG_RESET_FROM_MMIO=y
+ CONFIG_PC_RESET_OFFSET=0x0
+ CONFIG_MMIO_RESET_VECTOR=0x10000000
+-# CONFIG_USE_MMAP is not set
++CONFIG_USE_MMAP=y
+ # CONFIG_MEM_RANDOM is not set
+ # CONFIG_MEM_COMPRESS is not set
+ # end of Memory Configuration
+ 
+ CONFIG_DEVICE=y
++# CONFIG_HAS_PORT_IO is not set
++CONFIG_HAS_UARTLITE=y
++# CONFIG_UARTLITE_PORT is not set
++CONFIG_UARTLITE_MMIO=0x40600000
++# CONFIG_UARTLITE_INPUT_FIFO is not set
+ CONFIG_HAS_FLASH=y
+ CONFIG_FLASH_START_ADDR=0x10000000
+-CONFIG_FLASH_SIZE=0x00000100
++CONFIG_FLASH_SIZE=0x100000
+ CONFIG_FLASH_IMG_PATH=""
+ # CONFIG_FPU_HOST is not set
+ CONFIG_FPU_SOFT=y
+@@ -95,6 +112,7 @@ CONFIG_LARGE_COPY=y
+ #
+ CONFIG_TIMER_GETTIMEOFDAY=y
+ # CONFIG_TIMER_CLOCK_GETTIME is not set
++# CONFIG_REPORT_ILLEGAL_INSTR is not set
+ CONFIG_RT_CHECK=y
+ CONFIG_ENABLE_INSTR_CNT=y
+ # end of Miscellaneous
+diff --git a/configs/riscv64-xs-ref_defconfig b/configs/riscv64-xs-ref_defconfig
+index a612a65e..d222c510 100644
+--- a/configs/riscv64-xs-ref_defconfig
++++ b/configs/riscv64-xs-ref_defconfig
+@@ -14,6 +14,8 @@ CONFIG_ISA64=y
+ # ISA-dependent Options for riscv64
+ #
+ CONFIG_CLINT_MMIO=0x38000000
++CONFIG_PLIC_MMIO_BASE=0x3c000000
++CONFIG_PLIC_MMIO_SIZE=0x400000
+ # CONFIG_MULTICORE_DIFF is not set
+ CONFIG_RVB=y
+ CONFIG_RVK=y
+@@ -66,10 +68,9 @@ CONFIG_DIFFTEST_REF_NAME="none"
+ #
+ # Memory Configuration
+ #
+-CONFIG_MBASE=0x80000000
+-CONFIG_MSIZE=0x200000000
++CONFIG_MBASE=0x080000000
++CONFIG_MSIZE=0xf80000000
+ CONFIG_PADDRBITS=36
+-CONFIG_BBL_OFFSET_WITH_CPT=0xa0000
+ CONFIG_RESET_FROM_MMIO=y
+ CONFIG_PC_RESET_OFFSET=0x0
+ CONFIG_MMIO_RESET_VECTOR=0x10000000
+@@ -79,8 +80,12 @@ CONFIG_USE_MMAP=y
+ # end of Memory Configuration
+ 
+ CONFIG_DEVICE=y
++# CONFIG_HAS_PORT_IO is not set
++CONFIG_HAS_UARTLITE=y
++# CONFIG_UARTLITE_PORT is not set
++CONFIG_UARTLITE_MMIO=0x40600000
++# CONFIG_UARTLITE_INPUT_FIFO is not set
+ CONFIG_HAS_FLASH=y
+-CONFIG_FLASH_PRESET_CONTENT="0x0010029b,0x01f29293,0x00028067"
+ CONFIG_FLASH_START_ADDR=0x10000000
+ CONFIG_FLASH_SIZE=0x100000
+ CONFIG_FLASH_IMG_PATH=""
+diff --git a/configs/riscv64-xs_defconfig b/configs/riscv64-xs_defconfig
+index fa5f28a3..69b6b7fe 100644
+--- a/configs/riscv64-xs_defconfig
++++ b/configs/riscv64-xs_defconfig
+@@ -14,10 +14,14 @@ CONFIG_ISA64=y
+ # ISA-dependent Options for riscv64
+ #
+ CONFIG_CLINT_MMIO=0x38000000
++CONFIG_PLIC_MMIO_BASE=0x3c000000
++CONFIG_PLIC_MMIO_SIZE=0x400000
+ # CONFIG_MULTICORE_DIFF is not set
+ CONFIG_RVB=y
+ CONFIG_RVK=y
+ # CONFIG_RVV_010 is not set
++CONFIG_RV_PMP_CSR=y
++CONFIG_RV_PMP_CHECK=y
+ CONFIG_RV_SVINVAL=y
+ # end of ISA-dependent Options for riscv64
+ 
+@@ -39,7 +43,7 @@ CONFIG_CC_O2=y
+ # CONFIG_CC_O3 is not set
+ CONFIG_CC_OPT="-O2"
+ CONFIG_CC_LTO=y
+-# CONFIG_CC_DEBUG is not set
++CONFIG_CC_DEBUG=y
+ # CONFIG_CC_ASAN is not set
+ # end of Build Options
+ 
+@@ -62,9 +66,9 @@ CONFIG_DIFFTEST_REF_NAME="none"
+ #
+ # Memory Configuration
+ #
+-CONFIG_MBASE=0x80000000
+-CONFIG_MSIZE=0x200000000
+-CONFIG_BBL_OFFSET_WITH_CPT=0xa0000
++CONFIG_MBASE=0x080000000
++CONFIG_MSIZE=0xf80000000
++CONFIG_PADDRBITS=36
+ # CONFIG_RESET_FROM_MMIO is not set
+ CONFIG_PC_RESET_OFFSET=0x0
+ CONFIG_USE_MMAP=y
+@@ -73,30 +77,30 @@ CONFIG_USE_MMAP=y
+ # end of Memory Configuration
+ 
+ CONFIG_DEVICE=y
+-CONFIG_HAS_PORT_IO=y
++# CONFIG_HAS_PORT_IO is not set
+ # CONFIG_HAS_SERIAL is not set
+ CONFIG_HAS_UARTLITE=y
+-CONFIG_UARTLITE_PORT=0x3f8
++# CONFIG_UARTLITE_PORT is not set
+ CONFIG_UARTLITE_MMIO=0x40600000
+ # CONFIG_UARTLITE_INPUT_FIFO is not set
+ CONFIG_HAS_TIMER=y
+-CONFIG_RTC_PORT=0x48
++# CONFIG_RTC_PORT is not set
+ CONFIG_RTC_MMIO=0xa1000048
+-CONFIG_HAS_KEYBOARD=y
+-CONFIG_I8042_DATA_PORT=0x60
+-CONFIG_I8042_DATA_MMIO=0xa1000060
+-CONFIG_HAS_VGA=y
+-CONFIG_FB_ADDR=0x50000000
+-CONFIG_VGA_CTL_PORT=0x100
+-CONFIG_VGA_CTL_MMIO=0x40001000
+-CONFIG_VGA_SHOW_SCREEN=n
+-CONFIG_VGA_SIZE_400x300=y
++# CONFIG_HAS_KEYBOARD is not set
++# CONFIG_I8042_DATA_PORT is not set
++# CONFIG_I8042_DATA_MMIO is not set
++# CONFIG_HAS_VGA is not set
++# CONFIG_FB_ADDR is not set
++# CONFIG_VGA_CTL_PORT is not set
++# CONFIG_VGA_CTL_MMIO is not set
++# CONFIG_VGA_SHOW_SCREEN is not set
++# CONFIG_VGA_SIZE_400x300 is not set
+ # CONFIG_VGA_SIZE_800x600 is not set
+ # CONFIG_HAS_AUDIO is not set
+ # CONFIG_HAS_DISK is not set
+-CONFIG_HAS_SDCARD=y
+-CONFIG_SDCARD_CTL_MMIO=0x40002000
+-CONFIG_SDCARD_IMG_PATH=""
++# CONFIG_HAS_SDCARD is not set
++# CONFIG_SDCARD_CTL_MMIO is not set
++# CONFIG_SDCARD_IMG_PATH is not set
+ # CONFIG_HAS_FLASH is not set
+ # CONFIG_FPU_HOST is not set
+ CONFIG_FPU_SOFT=y
+@@ -117,10 +121,10 @@ CONFIG_AC_SOFT=y
+ CONFIG_TIMER_GETTIMEOFDAY=y
+ # CONFIG_TIMER_CLOCK_GETTIME is not set
+ CONFIG_RT_CHECK=y
+-CONFIG_PERF_OPT=y
+-CONFIG_TCACHE_SIZE=8192
+-CONFIG_BB_LIST_SIZE=1024
+-CONFIG_BB_POOL_SIZE=1024
++# CONFIG_PERF_OPT is not set
++# CONFIG_TCACHE_SIZE is not set
++# CONFIG_BB_LIST_SIZE is not set
++# CONFIG_BB_POOL_SIZE is not set
+ # CONFIG_DISABLE_INSTR_CNT is not set
+ CONFIG_ENABLE_INSTR_CNT=y
+ # end of Miscellaneous
+diff --git a/include/checkpoint/path_manager.h b/include/checkpoint/path_manager.h
+index 1499fdaa..ed5c9ea8 100644
+--- a/include/checkpoint/path_manager.h
++++ b/include/checkpoint/path_manager.h
+@@ -21,9 +21,6 @@
+ #define NEMU_PATH_MANAGER_H
+ 
+ #include <string>
+-#include <filesystem>
+-
+-namespace fs = std::filesystem;
+ 
+ class PathManager
+ {
+@@ -35,8 +32,8 @@ class PathManager
+     int cptID;
+ 
+     std::string workloadPath;
+-    fs::path outputPath;
+-    fs::path simpointPath;
++    std::string outputPath;
++    std::string simpointPath;
+ 
+   public:
+     void init();
+diff --git a/include/common.h b/include/common.h
+index 56071843..dfbdf92b 100644
+--- a/include/common.h
++++ b/include/common.h
+@@ -25,7 +25,7 @@
+ #include <generated/autoconf.h>
+ #include <macro.h>
+ 
+-#if CONFIG_MBASE + CONFIG_MSIZE > 0x100000000ul
++#if CONFIG_MBASE + CONFIG_MSIZE >= 0x100000000ul
+ #define PMEM64 1
+ #endif
+ 
+diff --git a/include/debug.h b/include/debug.h
+index 345b9f65..c4354e21 100644
+--- a/include/debug.h
++++ b/include/debug.h
+@@ -46,7 +46,6 @@
+ #define Assert(cond, ...) \
+   do { \
+     if (!(cond)) { \
+-      fflush(stdout); \
+       fprintf(stderr, "\33[1;31m"); \
+       fprintf(stderr, __VA_ARGS__); \
+       fprintf(stderr, "\33[0m\n"); \
+@@ -54,6 +53,8 @@
+       extern void monitor_statistic(); \
+       isa_reg_display(); \
+       monitor_statistic(); \
++      fflush(stdout); \
++      fflush(stderr); \
+       assert(cond); \
+     } \
+   } while (0)
+diff --git a/scripts/build.mk b/scripts/build.mk
+index ec9a3459..c4e6d014 100644
+--- a/scripts/build.mk
++++ b/scripts/build.mk
+@@ -24,12 +24,12 @@ CC := $(CCACHE) $(CC)
+ LD := $(CCACHE) $(CC)
+ INCLUDES = $(addprefix -I, $(INC_DIR))
+ XINCLUDES = $(addprefix -I, $(XINC_DIR))
+-CFLAGS  := -O2 -MMD -Wall -Werror $(INCLUDES) $(CFLAGS)
+-CXXFLAGS  := -O2 -MMD -Wall -Werror --std=c++17 $(XINCLUDES) $(CFLAGS)
++CFLAGS  := -O2 -MMD -Wall -Werror -std=gnu11 $(INCLUDES) $(CFLAGS)
++CXXFLAGS  := -O2 -MMD -Wall -Werror -std=c++17 $(XINCLUDES) $(CFLAGS)
+ LDFLAGS := -O2 $(LDFLAGS)
+ # filesystem
+ ifndef SHARE
+-LDFLAGS += -lstdc++fs -lstdc++
++LDFLAGS += -lstdc++
+ endif
+ 
+ COBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
+diff --git a/src/checkpoint/path_manager.cpp b/src/checkpoint/path_manager.cpp
+index ac755466..bbdb0d03 100644
+--- a/src/checkpoint/path_manager.cpp
++++ b/src/checkpoint/path_manager.cpp
+@@ -17,16 +17,41 @@
+ // Created by zyy on 2020/11/21.
+ //
+ 
++#include <string.h>
++#include <sys/stat.h>
++
+ #include <checkpoint/path_manager.h>
+ #include <checkpoint/cpt_env.h>
+ #include <checkpoint/profiling.h>
+ 
+ #include <cassert>
+ #include <iostream>
+-#include <filesystem>
+ 
+ using namespace std;
+ 
++
++bool exists(const std::string &path) {
++  struct stat st;
++  return stat(path.c_str(), &st) == 0;
++}
++
++void create_directories(const std::string &path) {
++  char  buf[path.size()];
++  char *sep;
++
++  strcpy(buf, path.c_str());
++
++  while ((sep = strchr(buf, '/'))) {
++    *sep = '\0';
++    if (mkdir(buf, 0755))
++      break;
++    *sep = '/';
++  }
++
++  mkdir(path.c_str(), 0755);
++}
++
++
+ extern "C" {
+ #include <debug.h>
+ extern bool log_enable();
+@@ -57,7 +82,7 @@ void PathManager::init() {
+ 
+   if (profiling_state == SimpointCheckpointing) {
+     assert(simpoints_dir);
+-    simpointPath = fs::path(string(simpoints_dir) + "/" + workloadName +"/");
++    simpointPath = std::string(simpoints_dir) + "/" + workloadName +"/";
+   }
+ 
+   setOutputDir();
+@@ -69,10 +94,10 @@ void PathManager::setOutputDir() {
+     output_path += to_string(cptID) + "/";
+   }
+ 
+-  outputPath = fs::path(output_path);
++  outputPath = output_path;
+ 
+-  if (!fs::exists(outputPath)) {
+-    fs::create_directories(outputPath);
++  if (!exists(outputPath)) {
++    create_directories(outputPath);
+   }
+   Log("Created %s\n", output_path.c_str());
+ }
+@@ -82,15 +107,15 @@ void PathManager::incCptID() {
+ }
+ 
+ std::string PathManager::getOutputPath() const {
+-  assert(fs::exists(outputPath));
+-  return outputPath.string();
++  assert(exists(outputPath));
++  return outputPath;
+ }
+ 
+ std::string PathManager::getSimpointPath() const {
+   // cerr << simpointPath.string() << endl;
+   // std::fflush(stderr);
+-  assert(fs::exists(simpointPath));
+-  return simpointPath.string();
++  assert(exists(simpointPath));
++  return simpointPath;
+ }
+ 
+ PathManager pathManager;
+diff --git a/src/cpu/cpu-exec.c b/src/cpu/cpu-exec.c
+index 21fd090f..9d0cc593 100644
+--- a/src/cpu/cpu-exec.c
++++ b/src/cpu/cpu-exec.c
+@@ -115,8 +115,14 @@ void longjmp_exec(int cause) {
+   longjmp(jbuf_exec, cause);
+ }
+ 
++bool debug_flag(int idx);
++void debug_call(int idx);
++
+ _Noreturn
+ void longjmp_exception(int ex_cause) {
++  if (debug_flag(3))
++    debug_call(ex_cause);
++
+ #ifdef CONFIG_GUIDED_EXEC
+   cpu.guided_exec = false;
+ #endif
+diff --git a/src/cpu/difftest/ref.c b/src/cpu/difftest/ref.c
+index 157bd7fc..e58adf8f 100644
+--- a/src/cpu/difftest/ref.c
++++ b/src/cpu/difftest/ref.c
+@@ -15,9 +15,13 @@
+ ***************************************************************************************/
+ 
+ #include <isa.h>
++#include <memory/vaddr.h>
+ #include <memory/paddr.h>
++#include <device/mmio.h>
+ #include <cpu/cpu.h>
+ #include <difftest.h>
++#include <execinfo.h>
++#include <stdlib.h>
+ 
+ extern void init_flash();
+ 
+@@ -47,7 +51,10 @@ static void nemu_large_memcpy(void *dest, void *src, size_t n) {
+ }
+ #endif
+ 
++uint8_t *hw_mmio_base(paddr_t addr);
++
+ void difftest_memcpy(paddr_t nemu_addr, void *dut_buf, size_t n, bool direction) {
++  if (in_pmem(nemu_addr)) {
+ #ifdef CONFIG_LARGE_COPY
+   if (direction == DIFFTEST_TO_REF) nemu_large_memcpy(guest_to_host(nemu_addr), dut_buf, n);
+   else nemu_large_memcpy(dut_buf, guest_to_host(nemu_addr), n);
+@@ -55,6 +62,15 @@ void difftest_memcpy(paddr_t nemu_addr, void *dut_buf, size_t n, bool direction)
+   if (direction == DIFFTEST_TO_REF) memcpy(guest_to_host(nemu_addr), dut_buf, n);
+   else memcpy(dut_buf, guest_to_host(nemu_addr), n);
+ #endif
++    return;
++  }
++
++  uint8_t *base = hw_mmio_base(nemu_addr);
++
++  if (direction == DIFFTEST_TO_REF)
++    memcpy(base, dut_buf, n);
++  else
++    memcpy(dut_buf, base, n);
+ }
+ 
+ void difftest_load_flash(void *flash_bin, size_t f_size){
+@@ -141,6 +157,73 @@ void difftest_init() {
+ #endif
+ }
+ 
++bool is_in_mmio(paddr_t paddr);
++
++void hw_pmem_rd(paddr_t paddr, word_t *data, int len);
++void hw_mmio_rd(paddr_t paddr, word_t *data, int len);
++
++bool difftest_read_pmem(uint64_t addr, uint64_t *data) {
++  if (likely(in_pmem(addr)))
++    hw_pmem_rd(addr, data, 8);
++  else if (is_in_mmio(addr))
++    hw_mmio_rd(addr, data, 8);
++  else
++    fprintf(stderr, "WARNING: accessing non-mem/mmio addr %lx\n", addr);
++
++  return false;
++}
++
++static uint64_t g_flag = 0;
++
++void difftest_flag(const char *str) {
++  char *new = strdup(str);
++  char *cur = new;
++  char *nxt = NULL;
++
++  while ((nxt = strchr(cur, ','))) {
++    nxt[0] = 0;
++
++    char *cmd = cur;
++    char *arg = NULL;
++    if ((arg = strchr(cmd, '='))) {
++      arg[0] = 0;
++      arg++;
++    }
++
++    uint64_t mask = 0;
++
++    if (strcmp(cmd, "pte") == 0)
++      mask = 1lu << 0;
++    else if (strcmp(cmd, "call") == 0)
++      mask = 1lu << 3;
++
++    g_flag &= ~mask;
++
++    if (arg && strlen(arg))
++      g_flag |= mask;
++
++    cur = nxt + 1;
++  }
++
++  free(new);
++}
++
++bool debug_flag(int idx) {
++  return !!(g_flag & (1lu << idx));
++}
++
++void debug_call(int idx) {
++  void  *ar[BUFSIZ];
++  size_t sz = backtrace(ar, BUFSIZ);
++  char **st = backtrace_symbols(ar, sz);
++
++  printf("call: %d\n", idx);
++  for (int i = 0; i < sz; i++)
++    printf("%s\n", st[i]);
++
++  free(st);
++}
++
+ #ifdef CONFIG_MULTICORE_DIFF
+ uint8_t *golden_pmem = NULL;
+ 
+diff --git a/src/device/Kconfig b/src/device/Kconfig
+index 24754c23..fb5d4cea 100644
+--- a/src/device/Kconfig
++++ b/src/device/Kconfig
+@@ -17,7 +17,6 @@ menuconfig HAS_SERIAL
+   default y
+ 
+ menuconfig HAS_UARTLITE
+-  depends on !SHARE
+   bool "Enable uartlite"
+   default n
+ 
+diff --git a/src/device/device.c b/src/device/device.c
+index 7fd812c6..b04fe8e9 100644
+--- a/src/device/device.c
++++ b/src/device/device.c
+@@ -17,7 +17,9 @@
+ #include <common.h>
+ #include <utils.h>
+ #include <device/alarm.h>
++#if defined(CONFIG_HAS_VGA) || defined(CONFIG_HAS_KEYBOARD)
+ #include <SDL2/SDL.h>
++#endif
+ 
+ void init_serial();
+ void init_uartlite();
+@@ -48,6 +50,7 @@ void device_update() {
+   device_update_flag = false;
+   IFDEF(CONFIG_HAS_VGA, vga_update_screen());
+ 
++#if defined(CONFIG_HAS_VGA) || defined(CONFIG_HAS_KEYBOARD)
+   SDL_Event event;
+   while (SDL_PollEvent(&event)) {
+     switch (event.type) {
+@@ -67,11 +70,14 @@ void device_update() {
+       default: break;
+     }
+   }
++#endif
+ }
+ 
+ void sdl_clear_event_queue() {
++#if defined(CONFIG_HAS_VGA) || defined(CONFIG_HAS_KEYBOARD)
+   SDL_Event event;
+   while (SDL_PollEvent(&event));
++#endif
+ }
+ 
+ void init_device() {
+diff --git a/src/device/io/mmio.c b/src/device/io/mmio.c
+index 42a622c0..fe9a05b8 100644
+--- a/src/device/io/mmio.c
++++ b/src/device/io/mmio.c
+@@ -52,3 +52,34 @@ __attribute__((noinline))
+ void mmio_write(paddr_t addr, int len, word_t data) {
+   map_write(addr, len, data, fetch_mmio_map(addr));
+ }
++
++uint8_t *hw_mmio_base(paddr_t addr) {
++  IOMap *map = fetch_mmio_map(addr);
++  return map->space + (addr - map->low);
++}
++
++void hw_mmio_rd(paddr_t addr, word_t *data, int len) {
++  uint8_t *base = hw_mmio_base(addr);
++
++  switch (len) {
++    case 1: *data = *((uint8_t  *)(base)); break;
++    case 2: *data = *((uint16_t *)(base)); break;
++    case 4: *data = *((uint32_t *)(base)); break;
++    case 8: *data = *((uint64_t *)(base)); break;
++  }
++
++  return;
++}
++
++void hw_mmio_wr(paddr_t addr, word_t  data, int len) {
++  uint8_t *base = hw_mmio_base(addr);
++
++  switch (len) {
++    case 1: *((uint8_t  *)(base)) = data; break;
++    case 2: *((uint16_t *)(base)) = data; break;
++    case 4: *((uint32_t *)(base)) = data; break;
++    case 8: *((uint64_t *)(base)) = data; break;
++  }
++
++  return;
++}
+\ No newline at end of file
+diff --git a/src/device/timer.c b/src/device/timer.c
+index 38af3d8b..21047351 100644
+--- a/src/device/timer.c
++++ b/src/device/timer.c
+@@ -37,7 +37,9 @@ static void timer_intr() {
+ 
+ void init_timer() {
+   rtc_port_base = (uint32_t *)new_space(8);
++#ifdef CONFIG_HAS_PORT_IO
+   add_pio_map ("rtc", CONFIG_RTC_PORT, rtc_port_base, 8, rtc_io_handler);
++#endif
+   add_mmio_map("rtc", CONFIG_RTC_MMIO, rtc_port_base, 8, rtc_io_handler);
+   add_alarm_handle(timer_intr);
+ }
+diff --git a/src/device/uartlite.c b/src/device/uartlite.c
+index effd9c8e..efbe559c 100644
+--- a/src/device/uartlite.c
++++ b/src/device/uartlite.c
+@@ -116,16 +116,12 @@ static void init_fifo() {
+ #endif
+ 
+ static void serial_io_handler(uint32_t offset, int len, bool is_write) {
+-#ifdef CONFIG_UARTLITE_ASSERT_FOUR
+-  assert(len == 1 || len == 4);
+-#else
+-  assert(len == 1);
+-#endif
+   switch (offset) {
+     /* We bind the serial port with the host stdout in NEMU. */
+     case UARTLITE_TX_FIFO:
++#ifndef CONFIG_SHARE
+       if (is_write) putc(serial_base[UARTLITE_TX_FIFO], stderr);
+-      else panic("Cannot read UARTLITE_TX_FIFO");
++#endif
+       break;
+     case UARTLITE_STAT_REG:
+       if (!is_write) serial_base[UARTLITE_STAT_REG] = 0x0;
+@@ -135,8 +131,10 @@ static void serial_io_handler(uint32_t offset, int len, bool is_write) {
+ 
+ void init_uartlite() {
+   serial_base = new_space(0xd);
++#ifdef CONFIG_HAS_PORT_IO
+   add_pio_map("uartlite", CONFIG_UARTLITE_PORT, serial_base, 0xd, serial_io_handler);
+-  add_mmio_map("uartlite", CONFIG_UARTLITE_MMIO, serial_base, 0xd, serial_io_handler);
++#endif
++  add_mmio_map("uartlite", CONFIG_UARTLITE_MMIO, serial_base, 0x10, serial_io_handler);
+ 
+ #ifdef CONFIG_UARTLITE_INPUT_FIFO
+   init_fifo();
+diff --git a/src/isa/riscv64/Kconfig b/src/isa/riscv64/Kconfig
+index 0c8d12b1..0cc5b39b 100644
+--- a/src/isa/riscv64/Kconfig
++++ b/src/isa/riscv64/Kconfig
+@@ -4,6 +4,14 @@ config CLINT_MMIO
+   hex "MMIO address of CLINT"
+   default 0xa2000000
+ 
++config PLIC_MMIO_BASE
++  hex "PLIC MMIO base address"
++  default 0x3c000000
++
++config PLIC_MMIO_SIZE
++  hex "PLIC MMIO size"
++  default 0x400000
++
+ config MULTICORE_DIFF
+   bool "(Beta) Enable multi-core difftest APIs for RISC-V"
+   default false
+diff --git a/src/isa/riscv64/clint.c b/src/isa/riscv64/clint.c
+index 5a4f0366..fd4f0528 100644
+--- a/src/isa/riscv64/clint.c
++++ b/src/isa/riscv64/clint.c
+@@ -18,7 +18,6 @@
+ #include <device/map.h>
+ #include "local-include/csr.h"
+ 
+-#ifndef CONFIG_SHARE
+ #define CLINT_MTIMECMP (0x4000 / sizeof(clint_base[0]))
+ #define CLINT_MTIME    (0xBFF8 / sizeof(clint_base[0]))
+ #define TIMEBASE 10000000ul
+@@ -42,7 +41,9 @@ uint64_t clint_uptime() {
+ }
+ 
+ static void clint_io_handler(uint32_t offset, int len, bool is_write) {
++#ifndef CONFIG_SHARE
+   update_clint();
++#endif
+ }
+ 
+ void init_clint() {
+@@ -51,4 +52,3 @@ void init_clint() {
+   IFNDEF(CONFIG_DETERMINISTIC, add_alarm_handle(update_clint));
+   boot_time = get_time();
+ }
+-#endif
+diff --git a/src/isa/riscv64/init.c b/src/isa/riscv64/init.c
+index ea63694d..f860ba5a 100644
+--- a/src/isa/riscv64/init.c
++++ b/src/isa/riscv64/init.c
+@@ -26,9 +26,8 @@ static const uint32_t img [] = {
+ };
+ 
+ void init_csr();
+-#ifndef CONFIG_SHARE
+ void init_clint();
+-#endif
++void init_plic ();
+ void init_device();
+ 
+ void init_isa() {
+@@ -90,7 +89,8 @@ void init_isa() {
+   memcpy(guest_to_host(RESET_VECTOR), img, sizeof(img));
+ #endif
+ 
+-  IFNDEF(CONFIG_SHARE, init_clint());
++  init_clint();
++  init_plic ();
+   IFDEF(CONFIG_SHARE, init_device());
+ 
+ #ifndef CONFIG_SHARE
+diff --git a/src/isa/riscv64/instr/priv/system.c b/src/isa/riscv64/instr/priv/system.c
+index f2e93377..8c06a889 100644
+--- a/src/isa/riscv64/instr/priv/system.c
++++ b/src/isa/riscv64/instr/priv/system.c
+@@ -34,7 +34,7 @@ int rtl_sys_slow_path(Decode *s, rtlreg_t *dest, const rtlreg_t *src1, uint32_t
+       rtl_hostcall(s, HOSTCALL_PRIV, jpc, src1, NULL, id);
+     }
+ #ifdef CONFIG_RV_SVINVAL
+-    int is_jmp = (id != 0x120) && (id != 0x105) && (id != 0x160) && (id != 0x180) && (id != 0x181);
++    int is_jmp = ((id >> 5) != 0x9) && ((id >> 5) != 0xb) && (id != 0x105) && (id != 0x180) && (id != 0x181);
+     // sfence.vma : wfi : sinval.vma : sfence.w.inval : sfence.inval.ir
+ #else
+     int is_jmp = (id != 0x120) && (id != 0x105);
+diff --git a/src/isa/riscv64/local-include/csr.h b/src/isa/riscv64/local-include/csr.h
+index f8dbb27d..adc87149 100644
+--- a/src/isa/riscv64/local-include/csr.h
++++ b/src/isa/riscv64/local-include/csr.h
+@@ -320,7 +320,7 @@ CSR_STRUCT_END(sip)
+ #define SATP_ASID_MAX_LEN 16
+ #define SATP_PADDR_MAX_LEN 44
+ 
+-#define SATP_MODE_MASK (8UL << (SATP_ASID_MAX_LEN + SATP_PADDR_MAX_LEN))
++#define SATP_MODE_MASK (15UL << (SATP_ASID_MAX_LEN + SATP_PADDR_MAX_LEN))
+ #define SATP_ASID_MASK (((1L << SATP_ASID_LEN)-1) << SATP_PADDR_MAX_LEN)
+ #define SATP_PADDR_MASK ((1L << SATP_PADDR_LEN)-1)
+ 
+diff --git a/src/isa/riscv64/system/priv.c b/src/isa/riscv64/system/priv.c
+index 0dcb32b2..44667c25 100644
+--- a/src/isa/riscv64/system/priv.c
++++ b/src/isa/riscv64/system/priv.c
+@@ -386,22 +386,7 @@ static word_t priv_instr(uint32_t op, const rtlreg_t *src) {
+       Loge("Executing mret to 0x%lx", mepc->val);
+       return mepc->val;
+       break;
+-    case 0x120: // sfence.vma
+-      // Described in 3.1.6.5 Virtualization Support in mstatus Register
+-      // When TVM=1, attempts to read or write the satp CSR or execute an SFENCE.VMA or SINVAL.VMA instruction
+-      // while executing in S-mode will raise an illegal instruction exception.
+-      if (cpu.mode == MODE_S && mstatus->tvm == 1)
+-        longjmp_exception(EX_II);
+-      mmu_tlb_flush(*src);
+-      break;
+ #ifdef CONFIG_RV_SVINVAL
+-    case 0x160: // sinval.vma
+-      if ((cpu.mode == MODE_S && mstatus->tvm == 1) ||
+-          !srnctl->svinval) { // srnctl contrl extension enable or not
+-        longjmp_exception(EX_II);
+-      }
+-      mmu_tlb_flush(*src);
+-      break;
+     case 0x180: // sfence.w.inval
+       if (!srnctl->svinval) {
+         longjmp_exception(EX_II);
+@@ -422,7 +407,29 @@ static word_t priv_instr(uint32_t op, const rtlreg_t *src) {
+     case -1: // fence.i
+       set_sys_state_flag(SYS_STATE_FLUSH_TCACHE);
+       break;
+-    default: panic("Unsupported privilige operation = %d", op);
++    default:
++      switch (op >> 5) {
++#ifndef CONFIG_MODE_USER
++        case 0x09: // sfence.vma
++          // Described in 3.1.6.5 Virtualization Support in mstatus Register
++          // When TVM=1, attempts to read or write the satp CSR or execute an SFENCE.VMA or SINVAL.VMA instruction
++          // while executing in S-mode will raise an illegal instruction exception.
++          if (cpu.mode == MODE_S && mstatus->tvm == 1)
++            longjmp_exception(EX_II);
++          mmu_tlb_flush(*src);
++          break;
++#ifdef CONFIG_RV_SVINVAL
++        case 0x0b: // sinval.vma
++          if ((cpu.mode == MODE_S && mstatus->tvm == 1) ||
++              !srnctl->svinval) { // srnctl contrl extension enable or not
++            longjmp_exception(EX_II);
++          }
++          mmu_tlb_flush(*src);
++          break;
++#endif
++#endif
++        default: panic("Unsupported privilige operation = %d", op);
++      }
+   }
+   return 0;
+ }
+diff --git a/src/memory/paddr.c b/src/memory/paddr.c
+index 7a721962..f706f91a 100644
+--- a/src/memory/paddr.c
++++ b/src/memory/paddr.c
+@@ -55,6 +55,20 @@ static inline void pmem_write(paddr_t addr, int len, word_t data) {
+   host_write(guest_to_host(addr), len, data);
+ }
+ 
++void hw_pmem_rd(paddr_t addr, word_t *data, int len) {
++  *data = host_read(guest_to_host(addr), len);
++}
++
++void hw_pmem_wr(paddr_t addr, word_t  data, int len) {
++  host_write(guest_to_host(addr), len, data);
++}
++
++void sw_pmem_wr(vaddr_t addr, word_t  data, int len) {
++#ifdef CONFIG_DIFFTEST_STORE_COMMIT
++  store_commit_queue_push(addr, data, len);
++#endif
++}
++
+ static inline void raise_access_fault(int cause, vaddr_t vaddr) {
+   INTR_TVAL_REG(cause) = vaddr;
+   longjmp_exception(cause);
+@@ -69,11 +83,8 @@ static inline void raise_read_access_fault(int type, vaddr_t vaddr) {
+ 
+ void init_mem() {
+ #ifdef CONFIG_USE_MMAP
+-  #ifdef CONFIG_MULTICORE_DIFF
+-    panic("Pmem must not use mmap during multi-core difftest");
+-  #endif
+   void *ret = mmap((void *)pmem, MEMORY_SIZE, PROT_READ | PROT_WRITE,
+-      MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
++      MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED | MAP_NORESERVE, -1, 0);
+   if (ret != pmem) {
+     perror("mmap");
+     assert(0);
+@@ -124,9 +135,7 @@ word_t paddr_read(paddr_t addr, int len, int type, int mode, vaddr_t vaddr) {
+     return rdata;
+   }
+   else {
+-#ifdef CONFIG_HAS_FLASH
+     if (likely(is_in_mmio(addr))) return mmio_read(addr, len);
+-#endif
+     if(dynamic_config.ignore_illegal_mem_access)
+       return 0;
+     printf("ERROR: invalid mem read from paddr " FMT_PADDR ", NEMU raise access exception\n", addr);
+@@ -156,6 +165,7 @@ void paddr_write(paddr_t addr, int len, word_t data, int mode, vaddr_t vaddr) {
+     return pmem_write(addr, len, data);
+   }
+   else {
++    if (is_in_mmio(addr)) return mmio_write(addr, len, data);
+     if(dynamic_config.ignore_illegal_mem_access)
+       return;
+     printf("ERROR: invalid mem write to paddr " FMT_PADDR ", NEMU raise access exception\n", addr);
+diff --git a/src/monitor/image_loader.c b/src/monitor/image_loader.c
+index 7239fdd2..d4680535 100644
+--- a/src/monitor/image_loader.c
++++ b/src/monitor/image_loader.c
+@@ -17,12 +17,12 @@
+ #include <stdlib.h>
+ #include <macro.h>
+ #include <memory/paddr.h>
+-#include <zlib.h>
+-
+ 
+ #ifndef CONFIG_MODE_USER
+ 
+ #ifdef CONFIG_MEM_COMPRESS
++#include <zlib.h>
++
+ long load_gz_img(const char *filename) {
+   gzFile compressed_mem = gzopen(filename, "rb");
+   Assert(compressed_mem, "Can not open '%s'", filename);
+diff --git a/src/monitor/ui.c b/src/monitor/ui.c
+index 3905350e..2ee2496f 100644
+--- a/src/monitor/ui.c
++++ b/src/monitor/ui.c
+@@ -24,10 +24,11 @@
+ #endif
+ 
+ #include <stdlib.h>
++
++#ifndef CONFIG_SHARE
+ #include <readline/readline.h>
+ #include <readline/history.h>
+ 
+-#ifndef CONFIG_SHARE
+ int is_batch_mode();
+ int set_watchpoint(char *e);
+ bool delete_watchpoint(int NO);
+diff --git a/src/isa/riscv64/plic.c b/src/isa/riscv64/plic.c
+new file mode 100644
+index 00000000..c15462e1
+--- /dev/null
++++ b/src/isa/riscv64/plic.c
+@@ -0,0 +1,227 @@
++#include <stdlib.h>
++#include <utils.h>
++#include <device/map.h>
++
++
++// revised from qemu: hw/intc/sifive_plic.c
++
++
++typedef struct plic_t {
++  uint32_t  num_addrs;
++  uint32_t *source_priority;
++  uint32_t *target_priority;
++  uint32_t *pending;
++  uint32_t *claimed;
++  uint32_t *enable;
++
++  uint32_t  bitfield_words;
++  uint32_t  num_sources;
++  uint32_t  num_priorities;
++  uint32_t  priority_base;
++  uint32_t  pending_base;
++  uint32_t  enable_base;
++  uint32_t  enable_stride;
++  uint32_t  context_base;
++  uint32_t  context_stride;
++} plic_t;
++
++static plic_t   *g_plic;
++static uint32_t *g_data;
++
++
++static void set_bit(uint32_t *arr, uint32_t irq, uint32_t v) {
++  uint32_t *val = &arr[irq >> 5];
++  uint32_t  shf =  irq & 0x1f;
++
++  *val &= ~(1 << shf);
++  *val |=   v << shf;
++}
++
++static void plic_set_pending(int irq, bool level) {
++  set_bit(g_plic->pending, irq, level);
++}
++
++static void plic_set_claimed(int irq, bool level) {
++  set_bit(g_plic->claimed, irq, level);
++}
++
++static int plic_irqs_pending(uint32_t addrid) {
++  for (int i = 0; i < g_plic->bitfield_words; i++) {
++    uint32_t pending_enabled_not_claimed =
++      g_plic->pending[i] & ~g_plic->claimed[i] &
++      g_plic->enable[addrid * g_plic->bitfield_words + i];
++
++    if (!pending_enabled_not_claimed)
++      continue;
++
++    for (int j = 0; j < 32; j++) {
++      int irq = (i << 5) + j;
++      uint32_t prio    = g_plic->source_priority[irq];
++      uint32_t enabled = pending_enabled_not_claimed & (1 << j);
++
++      if (enabled && (prio > g_plic->target_priority[addrid]))
++        return 1;
++    }
++  }
++
++  return 0;
++}
++
++static uint32_t plic_claim(uint32_t addrid) {
++  uint32_t max_irq  = 0;
++  uint32_t max_prio = g_plic->target_priority[addrid];
++
++  for (int i = 0; i < g_plic->bitfield_words; i++) {
++    uint32_t pending_enabled_not_claimed =
++      g_plic->pending[i] & ~g_plic->claimed[i] &
++      g_plic->enable[addrid * g_plic->bitfield_words + i];
++
++    if (!pending_enabled_not_claimed)
++      continue;
++
++    for (int j = 0; j < 32; j++) {
++      int irq = (i << 5) + j;
++      uint32_t prio    = g_plic->source_priority[irq];
++      uint32_t enabled = pending_enabled_not_claimed & (1 << j);
++
++      if (enabled && (prio > max_prio)) {
++        max_irq  = irq;
++        max_prio = prio;
++      }
++    }
++  }
++
++  if (max_irq) {
++    plic_set_pending(max_irq, false);
++    plic_set_claimed(max_irq, true);
++  }
++
++  return max_irq;
++}
++
++static void plic_update(void) {
++  for (int addrid = 0; addrid < g_plic->num_addrs; addrid++)
++    plic_irqs_pending(addrid);
++}
++
++
++static uint32_t plic_rd(uint32_t addr, int len) {
++  if (addr >= g_plic->priority_base &&
++      addr <  g_plic->priority_base + (g_plic->num_sources << 2)) {
++    uint32_t irq = ((addr - g_plic->priority_base) >> 2) + 1;
++
++    return g_plic->source_priority[irq];
++  }
++
++  if (addr >= g_plic->pending_base &&
++      addr <  g_plic->pending_base + (g_plic->num_sources >> 3)) {
++    uint32_t word = (addr - g_plic->pending_base) >> 2;
++
++    return g_plic->pending[word];
++  }
++
++  if (addr >= g_plic->enable_base &&
++      addr <  g_plic->enable_base + g_plic->num_addrs * g_plic->enable_stride) {
++    uint32_t addrid = (addr -  g_plic->enable_base) / g_plic->enable_stride;
++    uint32_t wordid = (addr & (g_plic->enable_stride - 1)) >> 2;
++
++    if (wordid < g_plic->bitfield_words)
++      return g_plic->enable[addrid * g_plic->bitfield_words + wordid];
++    else
++      return 0;
++  }
++
++  if (addr >= g_plic->context_base &&
++      addr <  g_plic->context_base + g_plic->num_addrs * g_plic->context_stride) {
++    uint32_t addrid = (addr - g_plic->context_base) / g_plic->context_stride;
++    uint32_t contextid = (addr & (g_plic->context_stride - 1));
++
++    if (contextid == 0)
++      return g_plic->target_priority[addrid];
++
++    else if (contextid == 4) {
++      uint32_t data = plic_claim(addrid);
++
++      plic_update();
++      return data;
++    }
++  }
++
++  return 0;
++}
++
++static void plic_wr(uint32_t addr, int len) {
++  uint32_t data = g_data[addr >> 2];
++
++  if (addr >= g_plic->priority_base &&
++      addr <  g_plic->priority_base + (g_plic->num_sources << 2)) {
++    uint32_t irq = ((addr - g_plic->priority_base) >> 2) + 1;
++
++    g_plic->source_priority[irq] = data & g_plic->num_priorities;
++    plic_update();
++
++    return;
++  }
++
++  if (addr >= g_plic->enable_base &&
++      addr <  g_plic->enable_base + g_plic->num_addrs * g_plic->enable_stride) {
++    uint32_t addrid = (addr -  g_plic->enable_base) / g_plic->enable_stride;
++    uint32_t wordid = (addr & (g_plic->enable_stride - 1)) >> 2;
++
++    if (wordid < g_plic->bitfield_words)
++      g_plic->enable[addrid * g_plic->bitfield_words + wordid] = data;
++
++    return;
++  }
++
++  if (addr >= g_plic->context_base &&
++      addr <  g_plic->context_base + g_plic->num_addrs * g_plic->context_stride) {
++    uint32_t addrid = (addr - g_plic->context_base) / g_plic->context_stride;
++    uint32_t contextid = (addr & (g_plic->context_stride - 1));
++
++    if (contextid == 0) {
++      if (data <= g_plic->num_priorities) {
++        g_plic->target_priority[addrid] = data;
++        plic_update();
++      }
++
++    } else if (contextid == 4) {
++      if (data < g_plic->num_sources) {
++        plic_set_claimed(data, false);
++        plic_update();
++      }
++    }
++  }
++}
++
++static void plic_rw(uint32_t addr, int len, bool is_write) {
++  if (is_write)
++    plic_wr(addr, len);
++  else
++    g_data[addr >> 2] = plic_rd(addr, len);
++}
++
++
++void init_plic(void) {
++  g_data = malloc(CONFIG_PLIC_MMIO_SIZE);
++  g_plic = malloc(sizeof(plic_t));
++
++  g_plic->num_sources     = 127;
++  g_plic->num_priorities  = 7;
++  g_plic->priority_base   = 0x04;
++  g_plic->pending_base    = 0x1000;
++  g_plic->enable_base     = 0x2000;
++  g_plic->enable_stride   = 0x80;
++  g_plic->context_base    = 0x200000;
++  g_plic->context_stride  = 0x1000;
++
++  g_plic->bitfield_words  = 4;
++  g_plic->num_addrs       = 16;
++  g_plic->source_priority = calloc(4, g_plic->num_sources);
++  g_plic->target_priority = calloc(4, g_plic->num_addrs);
++  g_plic->pending         = calloc(4, g_plic->bitfield_words);
++  g_plic->claimed         = calloc(4, g_plic->bitfield_words);
++  g_plic->enable          = calloc(4, g_plic->bitfield_words * g_plic->num_addrs);
++
++  add_mmio_map("plic", CONFIG_PLIC_MMIO_BASE, g_data, CONFIG_PLIC_MMIO_SIZE, plic_rw);
++}

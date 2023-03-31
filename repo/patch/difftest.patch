@@ -1,0 +1,821 @@
+diff --git a/src/main/scala/Difftest.scala b/src/main/scala/Difftest.scala
+index a945ff14..c9062585 100644
+--- a/src/main/scala/Difftest.scala
++++ b/src/main/scala/Difftest.scala
+@@ -26,6 +26,7 @@ trait DifftestParameter {
+ 
+ trait DifftestWithClock {
+   val clock  = Input(Clock())
++  val reset  = Input(Bool ())
+ }
+ 
+ trait DifftestWithCoreid {
+@@ -239,7 +240,7 @@ abstract class DifftestModule[T <: DifftestBundle] extends ExtModule with HasExt
+       }
+     }
+     // (1) DPI-C function prototype
+-    val dpicInterfaces = interfaces.filterNot(_._1 == "io_clock")
++    val dpicInterfaces = interfaces.filterNot(i => (i._1 == "io_clock" || i._1 == "io_reset"))
+     val dpicName = s"v_difftest_${moduleName.replace("Difftest", "")}"
+     val dpicDecl =
+       s"""
+@@ -257,9 +258,10 @@ abstract class DifftestModule[T <: DifftestBundle] extends ExtModule with HasExt
+          |`ifndef SYNTHESIS
+          |`ifdef DIFFTEST
+          |$dpicDecl
+-         |  always @(posedge io_clock) begin
+-         |    $dpicName (${dpicInterfaces.map(_._1).mkString(",")});
+-         |  end
++         |  always @(posedge io_clock)
++         |    if (~io_reset) begin
++         |      $dpicName (${dpicInterfaces.map(_._1).mkString(",")});
++         |    end
+          |`endif
+          |`endif
+          |endmodule
+diff --git a/src/test/csrc/common/compress.cpp b/src/test/csrc/common/compress.cpp
+index 70ba6c0f..fac96c8b 100644
+--- a/src/test/csrc/common/compress.cpp
++++ b/src/test/csrc/common/compress.cpp
+@@ -29,6 +29,7 @@ int isGzFile(const char *filename) {
+   return !strcmp(filename + (strlen(filename) - 3), ".gz");
+ }
+ 
++#ifdef VM_SAVABLE
+ long snapshot_compressToFile(uint8_t *ptr, const char *filename, long buf_size) {
+   gzFile compressed_mem = gzopen(filename, "wb");
+ 
+@@ -117,6 +118,7 @@ long readFromGz(void* ptr, const char *file_name, long buf_size, uint8_t load_ty
+   }
+   return curr_size;
+ }
++#endif
+ 
+ void nonzero_large_memcpy(const void* __restrict dest, const void* __restrict src, size_t n) {
+   uint64_t *_dest = (uint64_t *)dest;
+diff --git a/src/test/csrc/common/compress.h b/src/test/csrc/common/compress.h
+index b49bd1c6..86aef34a 100644
+--- a/src/test/csrc/common/compress.h
++++ b/src/test/csrc/common/compress.h
+@@ -18,9 +18,10 @@
+ #define COMPRESS_H
+ 
+ #include "common.h"
+-
+-#include <zlib.h>
+ #include <sys/time.h>
++#ifdef VM_SAVABLE
++#include <zlib.h>
++#endif
+ 
+ #define LOAD_SNAPSHOT 0
+ #define LOAD_RAM 1
+@@ -28,8 +29,10 @@
+ double calcTime(timeval s, timeval e);
+ 
+ int isGzFile(const char *filename);
++#ifdef VM_SAVABLE
+ long snapshot_compressToFile(uint8_t *ptr, const char *filename, long buf_size);
+ long readFromGz(void* ptr, const char *file_name, long buf_size, uint8_t load_type);
++#endif
+ 
+ void nonzero_large_memcpy(const void* __restrict dest, const void* __restrict src, size_t n);
+ 
+diff --git a/src/test/csrc/common/flash.cpp b/src/test/csrc/common/flash.cpp
+index 6a14d676..48c280da 100644
+--- a/src/test/csrc/common/flash.cpp
++++ b/src/test/csrc/common/flash.cpp
+@@ -44,11 +44,11 @@ extern "C" void flash_read(uint32_t addr, uint64_t *data) {
+ }
+ 
+ void init_flash(const char *flash_bin) {
+-  flash_base = (uint64_t *)mmap(NULL, EMU_FLASH_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
++  flash_base = (uint64_t *)mmap(NULL, EMU_FLASH_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+   if (flash_base == (uint64_t *)MAP_FAILED) {
+     printf("Warning: Insufficient phisical memory for flash\n");
+     EMU_FLASH_SIZE = 10 * 1024UL;   //10 KB
+-    flash_base = (uint64_t *)mmap(NULL, EMU_FLASH_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
++    flash_base = (uint64_t *)mmap(NULL, EMU_FLASH_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+     if (flash_base == (uint64_t *)MAP_FAILED) {
+       printf("Error: Cound not mmap 0x%lx bytes for flash\n", EMU_FLASH_SIZE);
+       assert(0);
+diff --git a/src/test/csrc/common/keyboard.cpp b/src/test/csrc/common/keyboard.cpp
+index 6e6e6326..83764068 100644
+--- a/src/test/csrc/common/keyboard.cpp
++++ b/src/test/csrc/common/keyboard.cpp
+@@ -16,7 +16,9 @@
+ 
+ #include "common.h"
+ #include "macro.h"
++#ifdef SHOW_SCREEN
+ #include <SDL2/SDL.h>
++#endif
+ 
+ // Note that this is not the standard
+ #define _KEYS(f) \
+diff --git a/src/test/csrc/common/ram.cpp b/src/test/csrc/common/ram.cpp
+index 7fc79b1d..cc6724c8 100644
+--- a/src/test/csrc/common/ram.cpp
++++ b/src/test/csrc/common/ram.cpp
+@@ -15,6 +15,7 @@
+ ***************************************************************************************/
+ 
+ #include <sys/mman.h>
++#include <sys/stat.h>
+ 
+ #include "common.h"
+ #include "ram.h"
+@@ -131,11 +132,11 @@ void init_ram(const char *img) {
+   printf("The image is %s\n", img);
+ 
+   // initialize memory using Linux mmap
+-  ram = (uint64_t *)mmap(NULL, EMU_RAM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
++  ram = (uint64_t *)mmap(NULL, EMU_RAM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+   if (ram == (uint64_t *)MAP_FAILED) {
+     printf("Warning: Insufficient phisical memory\n");
+     EMU_RAM_SIZE = 128 * 1024 * 1024UL;
+-    ram = (uint64_t *)mmap(NULL, EMU_RAM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
++    ram = (uint64_t *)mmap(NULL, EMU_RAM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+     if (ram == (uint64_t *)MAP_FAILED) {
+       printf("Error: Cound not mmap 0x%lx bytes\n", EMU_RAM_SIZE);
+       assert(0);
+@@ -149,31 +150,18 @@ void init_ram(const char *img) {
+   //new end
+ #endif
+ 
+-  int ret;
+   if (isGzFile(img)) {
++#ifdef VM_SAVABLE
+     printf("Gzip file detected and loading image from extracted gz file\n");
+     img_size = readFromGz(ram, img, EMU_RAM_SIZE, LOAD_RAM);
+     assert(img_size >= 0);
++#else
++    printf("Error: Gzip file detected but not supported\n");
++    assert(0);
++#endif
+   }
+-  else {
+-    FILE *fp = fopen(img, "rb");
+-    if (fp == NULL) {
+-      printf("Can not open '%s'\n", img);
+-      assert(0);
+-    }
+-
+-    fseek(fp, 0, SEEK_END);
+-    img_size = ftell(fp);
+-    if (img_size > EMU_RAM_SIZE) {
+-      img_size = EMU_RAM_SIZE;
+-    }
+-
+-    fseek(fp, 0, SEEK_SET);
+-    ret = fread(ram, img_size, 1, fp);
+-
+-    assert(ret == 1);
+-    fclose(fp);
+-  }
++  else
++    img_size = load_ram(img, 0);
+ 
+ #ifdef WITH_DRAMSIM3
+   #if !defined(DRAMSIM3_CONFIG) || !defined(DRAMSIM3_OUTDIR)
+@@ -188,6 +176,29 @@ void init_ram(const char *img) {
+ 
+ }
+ 
++uint64_t load_ram(const char *img, uint64_t offs) {
++  FILE *fp;
++
++  if ((fp = fopen(img, "rb")) == NULL)
++    return 0;
++
++  struct stat st;
++  stat(img, &st);
++
++  uint64_t siz = st.st_size;
++  if (siz > EMU_RAM_SIZE)
++    siz = EMU_RAM_SIZE;
++
++  if (fread((void *)((uint64_t)(ram) + offs), siz, 1, fp) != 1) {
++    fprintf(stderr, "ERROR: load_ram(%s) failed\n", img);
++    return 0;
++  }
++
++  fclose(fp);
++
++  return siz;
++}
++
+ void ram_finish() {
+   munmap(ram, EMU_RAM_SIZE);
+ #ifdef WITH_DRAMSIM3
+diff --git a/src/test/csrc/common/ram.h b/src/test/csrc/common/ram.h
+index 77cb5cfb..a2544166 100644
+--- a/src/test/csrc/common/ram.h
++++ b/src/test/csrc/common/ram.h
+@@ -24,6 +24,7 @@
+ #endif
+ 
+ void init_ram(const char *img);
++uint64_t load_ram(const char *img, uint64_t offs);
+ void ram_finish();
+ void* get_ram_start();
+ long get_ram_size();
+diff --git a/src/test/csrc/difftest/difftest.cpp b/src/test/csrc/difftest/difftest.cpp
+index d43d6305..2bfc5497 100644
+--- a/src/test/csrc/difftest/difftest.cpp
++++ b/src/test/csrc/difftest/difftest.cpp
+@@ -19,6 +19,8 @@
+ #include "ram.h"
+ #include "flash.h"
+ #include "spikedasm.h"
++#include <string>
++#include <deque>
+ 
+ static const char *reg_name[DIFFTEST_NR_REG+1] = {
+   "$0",  "ra",  "sp",   "gp",   "tp",  "t0",  "t1",   "t2",
+@@ -42,11 +44,42 @@ static const char *reg_name[DIFFTEST_NR_REG+1] = {
+ 
+ Difftest **difftest = NULL;
+ 
+-int difftest_init() {
++static std::deque<std::pair<uint64_t, std::string>> g_flag;
++
++int difftest_init(const char *str) {
+   difftest = new Difftest*[NUM_CORES];
+   for (int i = 0; i < NUM_CORES; i++) {
+     difftest[i] = new Difftest(i);
+   }
++
++  std::string cmd(str);
++
++  size_t cur = 0;
++  size_t nxt = 0;
++
++  cmd.append(";");
++  while ((nxt = cmd.find(";", cur)) != std::string::npos) {
++    std::string sub = cmd.substr(cur, nxt - cur);
++
++    size_t pos;
++    if ((pos = sub.find(":")) != std::string::npos)
++      g_flag.push_back(std::make_pair(std::stol(sub.substr(0, pos)),
++                                                sub.substr(pos + 1)));
++    cur = nxt + 1;
++  }
++
++  return 0;
++}
++
++int difftest_load(const char *str, uint64_t offs) {
++  uint64_t siz = load_ram(str, offs);
++
++  load_goldenmem(offs, siz);
++
++  for (int i = 0; i < NUM_CORES; i++)
++    difftest[i]->proxy->memcpy(PMEM_BASE + offs, (char *)(get_ram_start()) + offs,
++                               siz, DIFFTEST_TO_REF);
++
+   return 0;
+ }
+ 
+@@ -66,9 +99,54 @@ int difftest_state() {
+   return -1;
+ }
+ 
+-int difftest_step() {
++int difftest_flag(const char *str) {
++  g_flag.push_front(std::make_pair(0, str));
++  return 0;
++}
++
++static FILE *g_dump = NULL;
++
++int difftest_step(const uint64_t time) {
++  if (g_flag.size()) {
++    auto &old = g_flag.front();
++
++    if (old.first <= time) {
++      auto  &cmd = old.second;
++      size_t cur = 0;
++      size_t nxt = 0;
++
++      cmd.append(",");
++      while ((nxt = cmd.find(",", cur)) != std::string::npos) {
++        std::string sub = cmd.substr(cur, nxt - cur);
++        std::string arg;
++
++        size_t pos;
++        if ((pos = sub.find("=")) != std::string::npos) {
++          arg = sub.substr(pos + 1);
++          sub = sub.substr(0, pos);
++        }
++
++        if (sub == "dump") {
++          if (g_dump) {
++            fclose(g_dump);
++            g_dump = NULL;
++          }
++          if (arg.size())
++            g_dump = fopen(arg.c_str(), "w");
++        }
++
++        cur = nxt + 1;
++      }
++
++      for (int i = 0; i < NUM_CORES; i++)
++        difftest[i]->proxy->flag(cmd.c_str());
++
++      g_flag.pop_front();
++    }
++  }
++
+   for (int i = 0; i < NUM_CORES; i++) {
+-    int ret = difftest[i]->step();
++    int ret = difftest[i]->step(time);
+     if (ret) {
+       return ret;
+     }
+@@ -85,7 +163,7 @@ void Difftest::update_nemuproxy(int coreid, size_t ram_size = 0) {
+   proxy = new DIFF_PROXY(coreid, ram_size);
+ }
+ 
+-int Difftest::step() {
++int Difftest::step(uint64_t time) {
+   progress = false;
+   ticks++;
+ 
+@@ -135,17 +213,17 @@ int Difftest::step() {
+   // interrupt has the highest priority
+   if (dut.event.interrupt) {
+     dut.csr.this_pc = dut.event.exceptionPC;
+-    do_interrupt();
++    do_interrupt(time);
+   } else if (dut.event.exception) {
+     // We ignored instrAddrMisaligned exception (0) for better debug interface
+     // XiangShan should always support RVC, so instrAddrMisaligned will never happen
+     // TODO: update NEMU, for now, NEMU will update pc when exception happen
+     dut.csr.this_pc = dut.event.exceptionPC;
+-    do_exception();
++    do_exception(time);
+   } else {
+     // TODO: is this else necessary?
+     for (int i = 0; i < DIFFTEST_COMMIT_WIDTH && dut.commit[i].valid; i++) {
+-      do_instr_commit(i);
++      do_instr_commit(time, i);
+       dut.commit[i].valid = 0;
+       num_commit++;
+       // TODO: let do_instr_commit return number of instructions in this uop
+@@ -189,13 +267,13 @@ int Difftest::step() {
+   return 0;
+ }
+ 
+-void Difftest::do_interrupt() {
++void Difftest::do_interrupt(uint64_t time) {
+   state->record_abnormal_inst(dut.event.exceptionPC, dut.event.exceptionInst, RET_INT, dut.event.interrupt);
+   proxy->raise_intr(dut.event.interrupt | (1ULL << 63));
+   progress = true;
+ }
+ 
+-void Difftest::do_exception() {
++void Difftest::do_exception(uint64_t time) {
+   state->record_abnormal_inst(dut.event.exceptionPC, dut.event.exceptionInst, RET_EXC, dut.event.exception);
+   if (dut.event.exception == 12 || dut.event.exception == 13 || dut.event.exception == 15) {
+     // printf("exception cause: %d\n", dut.event.exception);
+@@ -218,7 +296,7 @@ void Difftest::do_exception() {
+   progress = true;
+ }
+ 
+-void Difftest::do_instr_commit(int i) {
++void Difftest::do_instr_commit(uint64_t time, int i) {
+   progress = true;
+   update_last_commit();
+ 
+@@ -230,7 +308,20 @@ void Difftest::do_instr_commit(int i) {
+   uint64_t commit_pc = dut.commit[i].pc;
+   uint64_t commit_instr = dut.commit[i].inst;
+ #endif
+-  state->record_inst(commit_pc, commit_instr, (dut.commit[i].rfwen | dut.commit[i].fpwen), dut.commit[i].wdest, get_commit_data(i), dut.commit[i].skip != 0);
++  bool     commit_wen   = dut.commit[i].rfwen | dut.commit[i].fpwen;
++  uint64_t commit_wdata = get_commit_data(i);
++
++  state->record_inst(commit_pc, commit_instr, commit_wen, dut.commit[i].wdest, commit_wdata, dut.commit[i].skip != 0);
++
++  if (g_dump)
++    fprintf(g_dump, "%ld %d %016lx %s:%016lx %s%s DASM(%lx)\n",
++            time,  id,
++            commit_pc,
++            commit_wen ? reg_name[dut.commit[i].wdest] : "--",
++            commit_wdata,
++            dut.commit[i].skip  ? "s" : "-",
++            dut.commit[i].fused ? "f" : "-",
++            commit_instr);
+ 
+ #ifdef DEBUG_MODE_DIFF
+   int spike_invalid = test_spike();
+@@ -257,7 +348,7 @@ void Difftest::do_instr_commit(int i) {
+ 
+   // MMIO accessing should not be a branch or jump, just +2/+4 to get the next pc
+   // to skip the checking of an instruction, just copy the reg state to reference design
+-  if (dut.commit[i].skip || (DEBUG_MODE_SKIP(dut.commit[i].valid, dut.commit[i].pc, dut.commit[i].inst))) {
++  if ((dut.commit[i].skip && realWen) || (DEBUG_MODE_SKIP(dut.commit[i].valid, dut.commit[i].pc, dut.commit[i].inst))) {
+     proxy->regcpy(ref_regs_ptr, REF_TO_DIFFTEST);
+     ref.csr.this_pc += dut.commit[i].isRVC ? 2 : 4;
+     if (realWen) {
+@@ -306,7 +397,7 @@ void Difftest::do_instr_commit(int i) {
+             len = 8;
+           }
+         }
+-        read_goldenmem(dut.load[i].paddr, &golden, len);
++        read_goldenmem(this, dut.load[i].paddr, &golden, len);
+         if (dut.load[i].fuType == 0xC) {
+           switch (dut.load[i].opType) {
+             case 0: golden = (int64_t)(int8_t)golden; break;
+@@ -408,24 +499,35 @@ int Difftest::do_refill_check(int cacheid) {
+       return 0;
+     }
+     for (int i = 0; i < 8; i++) {
+-      read_goldenmem(dut_refill.addr + i*8, &buf, 8);
+-      if (dut_refill.data[i] != *((uint64_t*)buf)) {
+-        printf("%s Refill test failed!\n",name);
+-        printf("addr: %lx\nGold: ", dut_refill.addr);
+-        for (int j = 0; j < 8; j++) {
+-          read_goldenmem(dut_refill.addr + j*8, &buf, 8);
+-          printf("%016lx", *((uint64_t*)buf));
+-        }
+-        printf("\nCore: ");
+-        for (int j = 0; j < 8; j++) {
+-          printf("%016lx", dut_refill.data[j]);
+-        }
+-        printf("\n");
+-        return 1;
++      uint64_t paddr = dut_refill.addr + i * 8;
++      uint64_t val;
++      read_goldenmem(this, paddr, &val, 8);
++      if (dut_refill.data[i] != val) {
++        bool ooo = proxy->read_pmem(paddr, &val);
++        if (dut_refill.data[i] != val)
++          if (!ooo)
++            goto err;
++
++        update_goldenmem(this, paddr, &val, 0xfflu, 8);
+       }
+     }
+   }
++
+   return 0;
++
++err:
++  printf("%s Refill test failed!\n",name);
++  printf("addr: %lx\nGold: ", dut_refill.addr);
++  for (int j = 0; j < 8; j++) {
++    read_goldenmem(this, dut_refill.addr + j*8, &buf, 8);
++    printf("%016lx", *((uint64_t*)buf));
++  }
++  printf("\nCore: ");
++  for (int j = 0; j < 8; j++) {
++    printf("%016lx", dut_refill.data[j]);
++  }
++  printf("\n");
++  return 1;
+ }
+ 
+ int Difftest::do_irefill_check() {
+@@ -439,7 +541,7 @@ int Difftest::do_drefill_check() {
+ 
+ 
+ 
+-inline int handle_atomic(int coreid, uint64_t atomicAddr, uint64_t atomicData, uint64_t atomicMask, uint8_t atomicFuop, uint64_t atomicOut) {
++inline int handle_atomic(Difftest *dut, int coreid, uint64_t atomicAddr, uint64_t atomicData, uint64_t atomicMask, uint8_t atomicFuop, uint64_t atomicOut) {
+   // We need to do atmoic operations here so as to update goldenMem
+   if (!(atomicMask == 0xf || atomicMask == 0xf0 || atomicMask == 0xff)) {
+     printf("Unrecognized mask: %lx\n", atomicMask);
+@@ -451,7 +553,7 @@ inline int handle_atomic(int coreid, uint64_t atomicAddr, uint64_t atomicData, u
+     uint64_t t  = atomicOut;   // original value
+     uint64_t ret;
+     uint64_t mem;
+-    read_goldenmem(atomicAddr, &mem, 8);
++    read_goldenmem(dut, atomicAddr, &mem, 8);
+     if (mem != t && atomicFuop != 007 && atomicFuop != 003) {  // ignore sc_d & lr_d
+       printf("Core %d atomic instr mismatch goldenMem, mem: 0x%lx, t: 0x%lx, op: 0x%x, addr: 0x%lx\n", coreid, mem, t, atomicFuop, atomicAddr);
+       return 1;
+@@ -471,7 +573,7 @@ inline int handle_atomic(int coreid, uint64_t atomicAddr, uint64_t atomicData, u
+       case 052: case 053: ret = (t > rs) ? t : rs; break;
+       default: printf("Unknown atomic fuOpType: 0x%x\n", atomicFuop);
+     }
+-    update_goldenmem(atomicAddr, &ret, atomicMask, 8);
++    update_goldenmem(dut, atomicAddr, &ret, atomicMask, 8);
+   }
+ 
+   if (atomicMask == 0xf || atomicMask == 0xf0) {
+@@ -482,7 +584,7 @@ inline int handle_atomic(int coreid, uint64_t atomicAddr, uint64_t atomicData, u
+     uint64_t mem_raw;
+     uint64_t ret_sel;
+     atomicAddr = (atomicAddr & 0xfffffffffffffff8);
+-    read_goldenmem(atomicAddr, &mem_raw, 8);
++    read_goldenmem(dut, atomicAddr, &mem_raw, 8);
+ 
+     if (atomicMask == 0xf)
+       mem = (uint32_t)mem_raw;
+@@ -511,12 +613,12 @@ inline int handle_atomic(int coreid, uint64_t atomicAddr, uint64_t atomicData, u
+     ret_sel = ret;
+     if (atomicMask == 0xf0)
+       ret_sel = (ret_sel << 32);
+-    update_goldenmem(atomicAddr, &ret_sel, atomicMask, 8);
++    update_goldenmem(dut, atomicAddr, &ret_sel, atomicMask, 8);
+   }
+   return 0;
+ }
+ 
+-void dumpGoldenMem(char* banner, uint64_t addr, uint64_t time) {
++void dumpGoldenMem(Difftest *dut, char* banner, uint64_t addr, uint64_t time) {
+ #ifdef DEBUG_REFILL
+   char buf[512];
+   if (addr == 0) {
+@@ -524,7 +626,7 @@ void dumpGoldenMem(char* banner, uint64_t addr, uint64_t time) {
+   }
+   printf("============== %s =============== time = %ld\ndata: ", banner, time);
+     for (int i = 0; i < 8; i++) {
+-      read_goldenmem(addr + i*8, &buf, 8);
++      read_goldenmem(dut, addr + i*8, &buf, 8);
+       printf("%016lx", *((uint64_t*)buf));
+     }
+     printf("\n");
+@@ -536,24 +638,24 @@ int Difftest::do_golden_memory_update() {
+   // Update Golden Memory info
+ 
+   if (ticks == 100) {
+-    dumpGoldenMem("Init", track_instr, ticks);
++    dumpGoldenMem(this, "Init", track_instr, ticks);
+   }
+ 
+   for(int i = 0; i < DIFFTEST_SBUFFER_RESP_WIDTH; i++){
+     if (dut.sbuffer[i].resp) {
+       dut.sbuffer[i].resp = 0;
+-      update_goldenmem(dut.sbuffer[i].addr, dut.sbuffer[i].data, dut.sbuffer[i].mask, 64);
++      update_goldenmem(this, dut.sbuffer[i].addr, dut.sbuffer[i].data, dut.sbuffer[i].mask, 64);
+       if (dut.sbuffer[i].addr == track_instr) {
+-        dumpGoldenMem("Store", track_instr, ticks);
++        dumpGoldenMem(this, "Store", track_instr, ticks);
+       }
+     }
+   }
+ 
+   if (dut.atomic.resp) {
+     dut.atomic.resp = 0;
+-    int ret = handle_atomic(id, dut.atomic.addr, dut.atomic.data, dut.atomic.mask, dut.atomic.fuop, dut.atomic.out);
++    int ret = handle_atomic(this, id, dut.atomic.addr, dut.atomic.data, dut.atomic.mask, dut.atomic.fuop, dut.atomic.out);
+     if (dut.atomic.addr == track_instr) {
+-      dumpGoldenMem("Atmoic", track_instr, ticks);
++      dumpGoldenMem(this, "Atmoic", track_instr, ticks);
+     }
+     if (ret) return ret;
+   }
+diff --git a/src/test/csrc/difftest/difftest.h b/src/test/csrc/difftest/difftest.h
+index 64a41377..b0c2e8f1 100644
+--- a/src/test/csrc/difftest/difftest.h
++++ b/src/test/csrc/difftest/difftest.h
+@@ -278,7 +278,7 @@ public:
+   uint32_t num_commit = 0; // # of commits if made progress
+   bool has_commit = false;
+   // Trigger a difftest checking procdure
+-  virtual int step();
++  virtual int step(uint64_t time);
+   void update_nemuproxy(int, size_t);
+   inline bool get_trap_valid() {
+     return dut.trap.valid;
+@@ -387,9 +387,9 @@ protected:
+   void update_last_commit() { last_commit = ticks; }
+   int check_timeout();
+   void do_first_instr_commit();
+-  void do_interrupt();
+-  void do_exception();
+-  void do_instr_commit(int index);
++  void do_interrupt(uint64_t time);
++  void do_exception(uint64_t time);
++  void do_instr_commit(uint64_t time, int index);
+   int do_store_check();
+   int do_refill_check(int cacheid);
+   int do_irefill_check();
+@@ -410,8 +410,10 @@ protected:
+ };
+ 
+ extern Difftest **difftest;
+-int difftest_init();
+-int difftest_step();
++int difftest_init(const char *str);
++int difftest_load(const char *str, uint64_t offs);
++int difftest_flag(const char *str);
++int difftest_step(const uint64_t time);
+ int difftest_state();
+ int init_nemuproxy(size_t);
+ 
+diff --git a/src/test/csrc/difftest/goldenmem.cpp b/src/test/csrc/difftest/goldenmem.cpp
+index da7577df..43a74b5a 100644
+--- a/src/test/csrc/difftest/goldenmem.cpp
++++ b/src/test/csrc/difftest/goldenmem.cpp
+@@ -23,24 +23,34 @@
+ #include "refproxy.h"
+ 
+ // #define DIFFTEST_STORE_COMMIT
++#define PAGE_MASK ((1lu << 12) - 1lu)
+ 
+ uint8_t *pmem;
+ 
+ void* guest_to_host(paddr_t addr) { return &pmem[addr]; }
+ 
+ void init_goldenmem() {
+-  pmem = (uint8_t *)mmap(NULL, PMEM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
++  pmem = (uint8_t *)mmap(NULL, PMEM_SIZE, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+   if (pmem == (uint8_t *)MAP_FAILED) {
+     printf("ERROR allocating physical memory. \n");
+   }
+   void* get_img_start();
+   long get_img_size();
+-  nonzero_large_memcpy(pmem, get_img_start(), get_img_size());
++  load_goldenmem(0, get_img_size());
+   ref_misc_put_gmaddr(pmem);
+ }
+ 
+-void update_goldenmem(paddr_t addr, void *data, uint64_t mask, int len) {
++void load_goldenmem(uint64_t offs, uint64_t siz) {
++  if (siz)
++    nonzero_large_memcpy(pmem + offs, (char *)(get_img_start()) + offs, siz);
++}
++
++void update_goldenmem(Difftest *dut, paddr_t addr, void *data, uint64_t mask, int len) {
+   uint8_t *dataArray = (uint8_t*)data;
++  if ((addr & ~PAGE_MASK) != ((addr + len - 1) & ~PAGE_MASK)) {
++    printf("ERROR: unaligned write: %lx %d\n", addr, len);
++    return;
++  }
+   for (int i = 0; i < len; i++) {
+ 		if (((mask >> i) & 1) != 0) {
+ 			paddr_write(addr + i, dataArray[i], 1);
+@@ -48,7 +58,11 @@ void update_goldenmem(paddr_t addr, void *data, uint64_t mask, int len) {
+   }
+ }
+ 
+-void read_goldenmem(paddr_t addr, void *data, uint64_t len) {
++void read_goldenmem(Difftest *dut, paddr_t addr, void *data, uint64_t len) {
++  if ((addr & ~PAGE_MASK) != ((addr + len - 1) & ~PAGE_MASK)) {
++    printf("ERROR: unaligned write: %lx %ld\n", addr, len);
++    return;
++  }
+   *(uint64_t*)data = paddr_read(addr, len);
+ }
+ 
+@@ -95,7 +109,7 @@ static inline void pmem_write(paddr_t addr, word_t data, int len) {
+ inline word_t paddr_read(paddr_t addr, int len) {
+   if (in_pmem(addr)) return pmem_read(addr, len);
+   else {
+-    printf("[Hint] read not in pmem, maybe in speculative state! addr: %lx", addr);
++    printf("[Hint] read not in pmem, maybe in speculative state! addr: %lx\n", addr);
+     return 0;
+   }
+   return 0;
+@@ -103,5 +117,5 @@ inline word_t paddr_read(paddr_t addr, int len) {
+ 
+ inline void paddr_write(paddr_t addr, word_t data, int len) {
+   if (in_pmem(addr)) pmem_write(addr, data, len);
+-  else panic("write not in pmem!");
+-}
+\ No newline at end of file
++  else printf("ERROR: write not in pmem: %lx\n", addr);
++}
+diff --git a/src/test/csrc/difftest/goldenmem.h b/src/test/csrc/difftest/goldenmem.h
+index 80a08a3b..0bc418f3 100644
+--- a/src/test/csrc/difftest/goldenmem.h
++++ b/src/test/csrc/difftest/goldenmem.h
+@@ -23,6 +23,7 @@
+ #include <stdio.h>
+ #include "ram.h"
+ #include "common.h"
++#include "difftest.h"
+ 
+ typedef uint64_t paddr_t;
+ typedef uint64_t word_t;
+@@ -32,8 +33,9 @@ typedef uint64_t word_t;
+ extern uint8_t* pmem;
+ 
+ void init_goldenmem();
+-void update_goldenmem(paddr_t addr, void *data, uint64_t mask, int len);
+-void read_goldenmem(paddr_t addr, void *data, uint64_t len);
++void load_goldenmem(uint64_t offs, uint64_t siz);
++void update_goldenmem(Difftest *dut, paddr_t addr, void *data, uint64_t mask, int len);
++void read_goldenmem(Difftest *dut, paddr_t addr, void *data, uint64_t len);
+ 
+ /* convert the guest physical address in the guest program to host virtual address in NEMU */
+ void* guest_to_host(paddr_t addr);
+diff --git a/src/test/csrc/difftest/interface.cpp b/src/test/csrc/difftest/interface.cpp
+index 24a35ad5..bd152387 100644
+--- a/src/test/csrc/difftest/interface.cpp
++++ b/src/test/csrc/difftest/interface.cpp
+@@ -17,11 +17,11 @@
+ #include "interface.h"
+ 
+ extern "C" int v_difftest_init() {
+-  return difftest_init();
++  return difftest_init("");
+ }
+ 
+ extern "C" int v_difftest_step() {
+-  return difftest_step();
++  return difftest_step(0);
+ }
+ 
+ #define RETURN_NO_NULL \
+diff --git a/src/test/csrc/difftest/refproxy.cpp b/src/test/csrc/difftest/refproxy.cpp
+index c39cb9e9..711f8c24 100644
+--- a/src/test/csrc/difftest/refproxy.cpp
++++ b/src/test/csrc/difftest/refproxy.cpp
+@@ -89,6 +89,12 @@ NemuProxy::NemuProxy(int coreid, size_t ram_size = 0) {
+   set_ramsize = (void (*)(size_t size)) dlsym(handle, "difftest_set_ramsize");
+   check_and_assert(set_ramsize);
+ 
++  read_pmem = (bool (*)(paddr_t, uint64_t *))dlsym(handle, "difftest_read_pmem");
++  check_and_assert(read_pmem);
++
++  flag = (void (*)(const char *))dlsym(handle, "difftest_flag");
++  check_and_assert(flag);
++
+   query = (void (*)(void*, uint64_t))dlsym(handle, "difftest_query_ref");
+ #ifdef ENABLE_RUNHEAD
+   check_and_assert(query);
+@@ -186,6 +192,12 @@ SpikeProxy::SpikeProxy(int coreid, size_t ram_size = 0) {
+   check_and_assert(debug_mem_sync);
+ #endif
+ 
++  read_pmem = (bool (*)(paddr_t, uint64_t *))dlsym(handle, "difftest_read_pmem");
++  check_and_assert(read_pmem);
++
++  flag = (void (*)(const char *))dlsym(handle, "difftest_flag");
++  check_and_assert(flag);
++
+   query = (void (*)(void*, uint64_t))dlsym(handle, "difftest_query_ref");
+ #ifdef ENABLE_RUNHEAD
+   check_and_assert(query);
+diff --git a/src/test/csrc/difftest/refproxy.h b/src/test/csrc/difftest/refproxy.h
+index 4b20af0e..416c05de 100644
+--- a/src/test/csrc/difftest/refproxy.h
++++ b/src/test/csrc/difftest/refproxy.h
+@@ -35,6 +35,8 @@ public:
+   void (*update_config)(void *config) = NULL;
+   void (*raise_intr)(uint64_t no) = NULL;
+   void (*isa_reg_display)() = NULL;
++  bool (*read_pmem)(paddr_t addr, uint64_t *data) = NULL;
++  void (*flag)(const char *) = NULL;
+   void (*query)(void *result_buffer, uint64_t type) = NULL;
+   void (*debug_mem_sync)(paddr_t addr, void *bytes, size_t size) = NULL;
+   void (*load_flash_bin)(void *flash_bin, size_t size) = NULL;
+@@ -81,4 +83,4 @@ typedef struct DynamicConfig {
+ 
+ void ref_misc_put_gmaddr(uint8_t* ptr);
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/src/test/csrc/plugin/include/runahead.h b/src/test/csrc/plugin/include/runahead.h
+index a3c02dcf..be0e91f7 100644
+--- a/src/test/csrc/plugin/include/runahead.h
++++ b/src/test/csrc/plugin/include/runahead.h
+@@ -78,7 +78,7 @@ public:
+   void recover_checkpoint(uint64_t checkpoint_id);
+   void restart();
+   void update_debug_info(void* dest_buffer);
+-  int step();
++  int step(uint64_t time);
+   bool checkpoint_num_exceed_limit();
+   int do_instr_runahead();
+   pid_t do_instr_runahead_pc_guided(uint64_t jump_target_pc);
+diff --git a/src/test/csrc/plugin/runahead/runahead.cpp b/src/test/csrc/plugin/runahead/runahead.cpp
+index cbe392ec..7ee92f99 100644
+--- a/src/test/csrc/plugin/runahead/runahead.cpp
++++ b/src/test/csrc/plugin/runahead/runahead.cpp
+@@ -93,7 +93,7 @@ Runahead::~Runahead(){
+ // Should be called for every cycle emulated by Emulator
+ int runahead_step() {
+   for (int i = 0; i < NUM_CORES; i++) {
+-    int ret = runahead[i]->step();
++    int ret = runahead[i]->step(0);
+     if (ret) {
+       return ret;
+     }
+@@ -271,16 +271,16 @@ int Runahead::memdep_check(int i, RunaheadResponseQuery* ref_mem_query_result) {
+ }
+ #endif
+ 
+-int Runahead::step() { // override step() method
++int Runahead::step(uint64_t time) { // override step() method
+   ticks++;
+   if (dut_ptr->event.interrupt) {
+     assert(0); //TODO
+-    do_interrupt();
++    do_interrupt(0);
+   } else if(dut_ptr->event.exception) {
+     // We ignored instrAddrMisaligned exception (0) for better debug interface
+     // XiangShan should always support RVC, so instrAddrMisaligned will never happen
+     assert(0); //TODO
+-    do_exception();
++    do_exception(0);
+   } else {
+     if(dut_ptr->runahead_redirect.valid) {
+       dut_ptr->runahead_redirect.valid = false;

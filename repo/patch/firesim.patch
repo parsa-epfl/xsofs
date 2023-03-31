@@ -1,0 +1,1604 @@
+diff --git a/sim/firesim-lib/src/main/cc/bridges/serial.h b/sim/firesim-lib/src/main/cc/bridges/serial.h
+index b7871a60d..102a04359 100644
+--- a/sim/firesim-lib/src/main/cc/bridges/serial.h
++++ b/sim/firesim-lib/src/main/cc/bridges/serial.h
+@@ -3,7 +3,9 @@
+ #define __SERIAL_H
+ 
+ #include "bridges/bridge_driver.h"
++#ifdef SERIALBRIDGEMODULE_struct_guard
+ #include "fesvr/firesim_tsi.h"
++#endif
+ 
+ template <class T>
+ struct serial_data_t {
+diff --git a/sim/firesim-lib/src/main/scala/bridges/BlockDevBridge.scala b/sim/firesim-lib/src/main/scala/bridges/BlockDevBridge.scala
+deleted file mode 100644
+index 7f3c8f1e1..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/BlockDevBridge.scala
++++ /dev/null
+@@ -1,261 +0,0 @@
+-//See LICENSE for license details
+-package firesim.bridges
+-
+-import chisel3._
+-import chisel3.util._
+-import chisel3.experimental.{DataMirror, Direction}
+-import freechips.rocketchip.config.Parameters
+-import freechips.rocketchip.util.DecoupledHelper
+-
+-import midas.widgets._
+-import midas.models.DynamicLatencyPipe
+-import testchipip.{BlockDeviceIO, BlockDeviceRequest, BlockDeviceData, BlockDeviceInfo, HasBlockDeviceParameters, BlockDeviceKey, BlockDeviceConfig}
+-
+-class BlockDevBridgeTargetIO(implicit val p: Parameters) extends Bundle {
+-  val bdev = Flipped(new BlockDeviceIO)
+-  val reset = Input(Bool())
+-  val clock = Input(Clock())
+-}
+-
+-class BlockDevBridge(implicit p: Parameters) extends BlackBox
+-    with Bridge[HostPortIO[BlockDevBridgeTargetIO], BlockDevBridgeModule]  {
+-  val io = IO(new BlockDevBridgeTargetIO)
+-  val bridgeIO = HostPort(io)
+-  val constructorArg = p(BlockDeviceKey)
+-  generateAnnotations()
+-}
+-
+-object BlockDevBridge  {
+-  def apply(clock: Clock, blkdevIO: BlockDeviceIO, reset: Bool)(implicit p: Parameters): BlockDevBridge = {
+-    val ep = Module(new BlockDevBridge)
+-    ep.io.bdev <> blkdevIO
+-    ep.io.clock := clock
+-    ep.io.reset := reset
+-    ep
+-  }
+-}
+-
+-class BlockDevBridgeModule(blockDevExternal: BlockDeviceConfig, hostP: Parameters) extends BridgeModule[HostPortIO[BlockDevBridgeTargetIO]]()(hostP) {
+-  implicit override val p = hostP.alterPartial({ case BlockDeviceKey => Some(blockDevExternal) })
+-  lazy val module = new BridgeModuleImp(this) {
+-    // TODO use HasBlockDeviceParameters
+-    val dataBytes = 512
+-    val sectorBits = 32
+-    val nTrackers = blockDevExternal.nTrackers
+-    val tagBits = log2Up(nTrackers)
+-    val nTrackerBits = log2Up(nTrackers+1)
+-    val dataBitsPerBeat = 64
+-    val dataBeats = (dataBytes * 8) / dataBitsPerBeat // A transaction is thus dataBeats * len beats long
+-    val sectorSize = log2Ceil(sectorBits/8)
+-    val beatIdxBits = log2Ceil(dataBeats)
+-    val pAddrBits = 32 // TODO: Make configurable somehow
+-    // Timing parameters
+-    val latencyBits = 24
+-    val defaultReadLatency = (1 << 8).U(latencyBits.W)
+-    val defaultWriteLatency = (1 << 8).U(latencyBits.W)
+-
+-    val io = IO(new WidgetIO())
+-    val hPort = IO(HostPort(new BlockDevBridgeTargetIO))
+-
+-    val reqBuf = Module(new Queue(new BlockDeviceRequest, 10))
+-    val dataBuf = Module(new Queue(new BlockDeviceData, 32))
+-
+-    val rRespBuf = Module(new Queue(new BlockDeviceData, 32))
+-    val wAckBuf = Module(new Queue(UInt(tagBits.W), 4))
+-
+-    val target = hPort.hBits.bdev
+-    val channelCtrlSignals = Seq(hPort.toHost.hValid,
+-                                 hPort.fromHost.hReady)
+-    val rRespStallN = Wire(Bool()) // Unset if the SW model hasn't returned the response data in time
+-    val wAckStallN = Wire(Bool())  // As above, but with a write acknowledgement
+-    val tFireHelper = DecoupledHelper((channelCtrlSignals ++ Seq(
+-                                       reqBuf.io.enq.ready,
+-                                       dataBuf.io.enq.ready,
+-                                       rRespStallN,
+-                                       wAckStallN)):_*)
+-
+-    val tFire = tFireHelper.fire
+-    // Decoupled helper can't exclude two bools unfortunately...
+-    val targetReset = channelCtrlSignals.reduce(_ && _) && hPort.hBits.reset
+-
+-    reqBuf.reset  := reset.asBool || targetReset
+-    dataBuf.reset  := reset.asBool || targetReset
+-    rRespBuf.reset  := reset.asBool || targetReset
+-    wAckBuf.reset  := reset.asBool || targetReset
+-
+-    hPort.toHost.hReady := tFireHelper.fire
+-    hPort.fromHost.hValid := tFireHelper.fire
+-
+-    reqBuf.io.enq.bits := target.req.bits
+-    reqBuf.io.enq.valid := target.req.valid && tFireHelper.fire(reqBuf.io.enq.ready)
+-    target.req.ready := true.B
+-
+-    dataBuf.io.enq.bits := target.data.bits
+-    dataBuf.io.enq.valid := target.data.valid && tFireHelper.fire(dataBuf.io.enq.ready)
+-    target.data.ready := true.B
+-
+-    // Begin Timing model
+-    val tCycle = RegInit(0.U(latencyBits.W))
+-    when (tFire) {
+-      tCycle := tCycle + 1.U
+-    }
+-
+-    // Timing model programmable settings
+-    val readLatency = genWORegInit(Wire(UInt(latencyBits.W)), "read_latency", defaultReadLatency)
+-    val writeLatency = genWORegInit(Wire(UInt(latencyBits.W)), "write_latency", defaultWriteLatency)
+-
+-    withReset(reset.asBool || targetReset) {
+-      when (tFire) {
+-        assert(!target.req.fire || ((dataBeats.U * target.req.bits.len) < ((BigInt(1) << sectorBits) - 1).U),
+-               "Transaction length exceeds timing model maximum supported length")
+-      }
+-
+-      // Timing Model -- Write Latency Pipe
+-      // Write latency = write-ack cycle - cycle to receive last write beat
+-      // Count the beats received for each tracker; they can be interleaved
+-
+-      val wBeatCounters = Reg(Vec(nTrackers, UInt(sectorBits.W)))
+-      val wValid = RegInit(VecInit(Seq.fill(nTrackers)(false.B)))
+-
+-      val writeLatencyPipe = Module(new DynamicLatencyPipe(UInt(1.W), nTrackers, latencyBits))
+-      writeLatencyPipe.io.enq.valid := false.B
+-      writeLatencyPipe.io.enq.bits := DontCare
+-      writeLatencyPipe.io.latency := writeLatency
+-      writeLatencyPipe.io.tCycle := tCycle
+-
+-      val tagMatch = target.data.bits.tag === target.req.bits.tag
+-
+-      wValid.zip(wBeatCounters).zipWithIndex.foreach { case ((valid, count), idx) =>
+-        val wReqFire  = target.req.fire && target.req.bits.write && target.req.bits.tag === idx.U
+-        val wDataFire = target.data.fire && target.data.bits.tag === idx.U
+-        val wDone = (wDataFire && count === 1.U)
+-
+-        when (tFire) {
+-          // New write request received
+-          when(wDone) {
+-            assert(valid, "Write data received for unallocated tracker: %d\n", idx.U)
+-            writeLatencyPipe.io.enq.valid := true.B
+-            valid := false.B
+-          }.elsewhen (wReqFire) {
+-            valid := true.B
+-            count := Mux(wDataFire, dataBeats.U * target.req.bits.len - 1.U, dataBeats.U * target.req.bits.len)
+-            // We don't honestly expect len > 2^29 do we..
+-          // New data beat received for our tracker
+-          }.elsewhen (wDataFire) {
+-            count := count - 1.U
+-            assert(valid, "Write data received for unallocated tracker: %d\n", idx.U)
+-          }
+-        }
+-      }
+-
+-      // Timing Model -- Read Latency Pipe
+-      // Read latency is simply the number of cycles between read-req and first resp beat
+-      val readLatencyPipe = Module(new DynamicLatencyPipe(UInt(sectorBits.W), nTrackers, latencyBits))
+-
+-      readLatencyPipe.io.enq.valid := tFire && target.req.fire && !target.req.bits.write
+-      readLatencyPipe.io.enq.bits := target.req.bits.len
+-      readLatencyPipe.io.tCycle := tCycle
+-      readLatencyPipe.io.latency := readLatency
+-
+-      // Scheduler. Prioritize returning write acknowledgements over returning read resps
+-      // as they are only a single cycle long
+-      val readRespBeatsLeft = RegInit(0.U(sectorBits.W))
+-      val returnWrite = RegInit(false.B)
+-      val readRespBusy = readRespBeatsLeft =/= 0.U
+-      val done = (returnWrite || readRespBeatsLeft === 1.U) && target.resp.fire
+-      val idle = !returnWrite && !readRespBusy
+-      writeLatencyPipe.io.deq.ready := false.B
+-      readLatencyPipe.io.deq.ready  := false.B
+-
+-      when (tFire) {
+-        when (done || idle) {
+-          readRespBeatsLeft := 0.U
+-          returnWrite := false.B
+-
+-          // If a write-response is waiting, return it first
+-          when(writeLatencyPipe.io.deq.valid) {
+-            returnWrite := true.B
+-            writeLatencyPipe.io.deq.ready := true.B
+-          }.elsewhen(readLatencyPipe.io.deq.valid) {
+-            readRespBeatsLeft := readLatencyPipe.io.deq.bits * dataBeats.U
+-            readLatencyPipe.io.deq.ready := true.B
+-          }
+-        }.elsewhen(readRespBusy && target.resp.fire) {
+-          readRespBeatsLeft := readRespBeatsLeft - 1.U
+-        }
+-      }
+-
+-      // Tie functional queues to output, gated with timing model control
+-      target.resp.valid  := !idle
+-      target.resp.bits.data  := 0.U
+-      target.resp.bits.tag  := 0.U
+-      // This shouldn't be necessary for a well behaved target, but only drive bits
+-      // through when there is valid data in the queue, closing a potential
+-      // determinism hole
+-      when (rRespBuf.io.deq.valid && readRespBusy) {
+-        target.resp.bits.data  := rRespBuf.io.deq.bits.data
+-        target.resp.bits.tag  := rRespBuf.io.deq.bits.tag
+-      }.elsewhen (wAckBuf.io.deq.valid && returnWrite) {
+-        target.resp.bits.tag  := wAckBuf.io.deq.bits
+-      }
+-
+-      wAckStallN := !returnWrite || wAckBuf.io.deq.valid
+-      rRespStallN := !readRespBusy || rRespBuf.io.deq.valid
+-
+-      wAckBuf.io.deq.ready := tFireHelper.fire(wAckStallN) && returnWrite && target.resp.ready
+-      rRespBuf.io.deq.ready := tFireHelper.fire(rRespStallN) && readRespBusy && target.resp.ready
+-    } // withReset{}
+-
+-    // Memory mapped registers
+-    val nsectorReg = Reg(UInt(sectorBits.W))
+-    val max_req_lenReg = Reg(UInt(sectorBits.W))
+-    attach(nsectorReg, "bdev_nsectors", WriteOnly)
+-    attach(max_req_lenReg, "bdev_max_req_len", WriteOnly)
+-    target.info.nsectors := nsectorReg
+-    target.info.max_req_len := max_req_lenReg
+-
+-    // Functional request queue (to CPU)
+-    genROReg(reqBuf.io.deq.valid, "bdev_req_valid")
+-    genROReg(reqBuf.io.deq.bits.write, "bdev_req_write")
+-    genROReg(reqBuf.io.deq.bits.offset, "bdev_req_offset")
+-    genROReg(reqBuf.io.deq.bits.len, "bdev_req_len")
+-    genROReg(reqBuf.io.deq.bits.tag, "bdev_req_tag")
+-    Pulsify(genWORegInit(reqBuf.io.deq.ready, "bdev_req_ready", false.B), pulseLength = 1)
+-
+-    // Functional data queue (to CPU)
+-    genROReg(dataBuf.io.deq.valid, "bdev_data_valid")
+-    genROReg(dataBuf.io.deq.bits.data(63, 32), "bdev_data_data_upper")
+-    genROReg(dataBuf.io.deq.bits.data(31, 0), "bdev_data_data_lower")
+-    genROReg(dataBuf.io.deq.bits.tag, "bdev_data_tag")
+-    Pulsify(genWORegInit(dataBuf.io.deq.ready, "bdev_data_ready", false.B), pulseLength = 1)
+-
+-    // Read reponse buffer MMIO IF (from CPU)
+-    val rRespDataRegUpper = genWOReg(Wire(UInt((dataBitsPerBeat/2).W)),"bdev_rresp_data_upper")
+-    val rRespDataRegLower = genWOReg(Wire(UInt((dataBitsPerBeat/2).W)),"bdev_rresp_data_lower")
+-    val rRespTag          = genWOReg(Wire(UInt(tagBits.W)            ),"bdev_rresp_tag")
+-    Pulsify(                genWORegInit(rRespBuf.io.enq.valid  ,"bdev_rresp_valid", false.B), pulseLength = 1)
+-    genROReg(rRespBuf.io.enq.ready, "bdev_rresp_ready")
+-
+-    rRespBuf.io.enq.bits.data := Cat(rRespDataRegUpper, rRespDataRegLower)
+-    rRespBuf.io.enq.bits.tag := rRespTag
+-
+-    // Write acknowledgement buffer MMIO IF (from CPU) -- we only need the tag from SW
+-    val wAckTag          = genWOReg(Wire(UInt(tagBits.W))            ,"bdev_wack_tag")
+-    Pulsify(               genWORegInit(wAckBuf.io.enq.valid   ,"bdev_wack_valid", false.B), pulseLength = 1)
+-    genROReg(wAckBuf.io.enq.ready, "bdev_wack_ready")
+-    wAckBuf.io.enq.bits := wAckTag
+-
+-    // Indicates to the CPU-hosted component that we need to be serviced
+-    genROReg(reqBuf.io.deq.valid || dataBuf.io.deq.valid, "bdev_reqs_pending")
+-    genROReg(~wAckStallN, "bdev_wack_stalled")
+-    genROReg(~rRespStallN, "bdev_rresp_stalled")
+-
+-    genCRFile()
+-
+-    override def genHeader(base: BigInt, sb: StringBuilder) {
+-      super.genHeader(base, sb)
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_latency_bits", UInt32(latencyBits)))
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_num_trackers", UInt32(nTrackers)))
+-    }
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/bridges/DromajoBridge.scala b/sim/firesim-lib/src/main/scala/bridges/DromajoBridge.scala
+deleted file mode 100644
+index c1be4c0b5..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/DromajoBridge.scala
++++ /dev/null
+@@ -1,169 +0,0 @@
+-//See LICENSE for license details
+-package firesim.bridges
+-
+-import chisel3._
+-import chisel3.util._
+-import chisel3.util.experimental.BoringUtils
+-import freechips.rocketchip.config.{Parameters, Field}
+-import freechips.rocketchip.diplomacy.AddressSet
+-import freechips.rocketchip.util._
+-import freechips.rocketchip.rocket.TracedInstruction
+-import freechips.rocketchip.subsystem.RocketTilesKey
+-import freechips.rocketchip.tile.TileKey
+-
+-import testchipip.{TileTraceIO, DeclockedTracedInstruction, TracedInstructionWidths}
+-
+-import midas.widgets._
+-import testchipip.{StreamIO, StreamChannel}
+-import junctions.{NastiIO, NastiKey}
+-
+-//******
+-//* MISC
+-//******
+-
+-case class DromajoKey(
+-  insnWidths: TracedInstructionWidths, // Widths of variable length fields in each TI
+-  vecSizes: Int // The number of insns in each vec (= max insns retired at that core)
+-)
+-
+-//*************
+-//* TARGET LAND
+-//*************
+-
+-class DromajoTargetIO(insnWidths: TracedInstructionWidths, numInsns: Int) extends Bundle {
+-    val trace = Input(new TileTraceIO(insnWidths, numInsns))
+-}
+-
+-/**
+- * Blackbox that is instantiated in the target
+- */
+-class DromajoBridge(insnWidths: TracedInstructionWidths, numInsns: Int) extends BlackBox
+-    with Bridge[HostPortIO[DromajoTargetIO], DromajoBridgeModule]
+-{
+-  val io = IO(new DromajoTargetIO(insnWidths, numInsns))
+-  val bridgeIO = HostPort(io)
+-
+-  // give the Dromajo key to the GG module
+-  val constructorArg = Some(DromajoKey(insnWidths, numInsns))
+-
+-  // generate annotations to pass to GG
+-  generateAnnotations()
+-}
+-
+-/**
+- * Helper function to connect blackbox
+- */
+-object DromajoBridge {
+-  def apply(tracedInsns: TileTraceIO)(implicit p: Parameters): DromajoBridge = {
+-    val b = Module(new DromajoBridge(tracedInsns.insnWidths, tracedInsns.numInsns))
+-    b.io.trace := tracedInsns
+-    b
+-  }
+-}
+-
+-//*************************************************
+-//* GOLDEN GATE MODULE
+-//* This lives in the host (still runs on the FPGA)
+-//*************************************************
+-
+-class DromajoBridgeModule(key: DromajoKey)(implicit p: Parameters) extends BridgeModule[HostPortIO[DromajoTargetIO]]()(p)
+-    with StreamToHostCPU
+-{
+-  // CONSTANTS: DMA Parameters
+-  val toHostCPUQueueDepth = TokenQueueConsts.TOKEN_QUEUE_DEPTH
+-
+-  lazy val module = new BridgeModuleImp(this) {
+-
+-    // setup io
+-    val io = IO(new WidgetIO)
+-    val hPort = IO(HostPort(new DromajoTargetIO(key.insnWidths, key.vecSizes)))
+-
+-    // helper to get number to round up to nearest multiple
+-    def roundUp(num: Int, mult: Int): Int = { (num/mult).ceil.toInt * mult }
+-
+-    // get the traces
+-    val traces = hPort.hBits.trace.insns.map({ unmasked =>
+-      val masked = WireDefault(unmasked)
+-      masked.valid := unmasked.valid && !hPort.hBits.trace.reset
+-      masked
+-    })
+-    private val iaddrWidth = roundUp(traces.map(_.iaddr.getWidth).max, 8)
+-    private val insnWidth  = roundUp(traces.map(_.insn.getWidth).max, 8)
+-    private val wdataWidth = roundUp(traces.map(_.wdata.get.getWidth).max, 8)
+-    private val causeWidth = roundUp(traces.map(_.cause.getWidth).max, 8)
+-    private val tvalWidth  = roundUp(traces.map(_.tval.getWidth).max, 8)
+-
+-    // hack since for some reason padding a bool doesn't work...
+-    def boolPad(in: Bool, size: Int): UInt = {
+-      val temp = Wire(UInt(size.W))
+-      temp := in.asUInt
+-      temp
+-    }
+-
+-    val paddedTraces = traces.map { trace =>
+-      Cat(
+-        trace.tval.pad(tvalWidth),
+-        trace.cause.pad(causeWidth),
+-        boolPad(trace.interrupt, 8),
+-        boolPad(trace.exception, 8),
+-        trace.priv.asUInt.pad(8),
+-        trace.wdata.get.pad(wdataWidth),
+-        trace.insn.pad(insnWidth),
+-        trace.iaddr.pad(iaddrWidth),
+-        boolPad(trace.valid, 8)
+-      )
+-    }
+-
+-    val maxTraceSize = paddedTraces.map(t => t.getWidth).max
+-    val outDataSzBits = streamEnq.bits.getWidth
+-
+-    // constant
+-    val totalTracesPerToken = 2 // minTraceSz==190b so round up to nearest is 256b
+-    // constant
+-
+-    require(maxTraceSize < (outDataSzBits / totalTracesPerToken), "All instruction trace bits (i.e. valid, pc, instBits...) must fit in 256b")
+-
+-    // how many traces being sent over
+-    val numTraces = traces.size
+-    // num tokens needed to display full set of instructions from one cycle
+-    val numTokenForAll = ((numTraces - 1) / totalTracesPerToken) + 1
+-
+-    // only inc the counter when the something is sent (this implies that the input is valid and output is avail on the other side)
+-    val counterFire = streamEnq.fire()
+-    val (cnt, wrap) = Counter(counterFire, numTokenForAll)
+-
+-    val paddedTracesAligned = paddedTraces.map(t => t.asUInt.pad(outDataSzBits/totalTracesPerToken))
+-    val paddedTracesTruncated = if (numTraces == 1) {
+-      (paddedTracesAligned.asUInt >> (outDataSzBits.U * cnt))
+-    } else {
+-      (paddedTracesAligned.asUInt >> (outDataSzBits.U * cnt))(outDataSzBits-1, 0)
+-    }
+-
+-    streamEnq.valid := hPort.toHost.hValid
+-    streamEnq.bits := paddedTracesTruncated
+-
+-    // tell the host that you are ready to get more
+-    hPort.toHost.hReady := streamEnq.ready && wrap
+-
+-    // This is uni-directional. We don't drive tokens back to the target.
+-    hPort.fromHost.hValid := true.B
+-
+-    genCRFile()
+-
+-    // modify the output header file
+-    override def genHeader(base: BigInt, sb: StringBuilder) {
+-      super.genHeader(base, sb)
+-
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_iaddr_width", UInt32(iaddrWidth)))
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_insn_width", UInt32(insnWidth)))
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_wdata_width", UInt32(wdataWidth)))
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_cause_width", UInt32(causeWidth)))
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_tval_width", UInt32(tvalWidth)))
+-      sb.append(CppGenerationUtils.genMacro(s"${getWName.toUpperCase}_num_traces", UInt32(numTraces)))
+-    }
+-
+-    // general information printout
+-    println(s"Dromajo Bridge Information")
+-    println(s"  Total Inst. Traces / Commit Width: ${numTraces}")
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/bridges/GroundTestBridge.scala b/sim/firesim-lib/src/main/scala/bridges/GroundTestBridge.scala
+deleted file mode 100644
+index b089be88a..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/GroundTestBridge.scala
++++ /dev/null
+@@ -1,48 +0,0 @@
+-//See LICENSE for license details
+-package firesim.bridges
+-
+-import midas.widgets._
+-
+-import chisel3._
+-import chisel3.util._
+-import freechips.rocketchip.config.Parameters
+-
+-class GroundTestBridge extends BlackBox
+-    with Bridge[HostPortIO[GroundTestBridgeTargetIO], GroundTestBridgeModule] {
+-  val io = IO(new GroundTestBridgeTargetIO)
+-  val bridgeIO = HostPort(io)
+-  val constructorArg = None
+-  generateAnnotations()
+-}
+-
+-object GroundTestBridge {
+-  def apply(clock: Clock, success: Bool)(implicit p: Parameters): GroundTestBridge = {
+-    val bridge = Module(new GroundTestBridge)
+-    bridge.io.success := success
+-    bridge.io.clock := clock
+-    bridge
+-  }
+-}
+-
+-class GroundTestBridgeTargetIO extends Bundle {
+-  val success = Input(Bool())
+-  val clock = Input(Clock())
+-}
+-
+-class GroundTestBridgeModule(implicit p: Parameters)
+-    extends BridgeModule[HostPortIO[GroundTestBridgeTargetIO]] {
+-  lazy val module = new BridgeModuleImp(this) {
+-    val io = IO(new WidgetIO)
+-    val hPort = IO(HostPort(new GroundTestBridgeTargetIO))
+-
+-    hPort.toHost.hReady := true.B
+-    hPort.fromHost.hValid := true.B
+-
+-    val success = RegInit(false.B)
+-
+-    when (hPort.hBits.success && !success) { success := true.B }
+-
+-    genROReg(success, "success")
+-    genCRFile()
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/bridges/SerialBridge.scala b/sim/firesim-lib/src/main/scala/bridges/SerialBridge.scala
+deleted file mode 100644
+index b3debdab1..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/SerialBridge.scala
++++ /dev/null
+@@ -1,102 +0,0 @@
+-//See LICENSE for license details
+-package firesim.bridges
+-
+-import midas.widgets._
+-
+-import chisel3._
+-import chisel3.util._
+-import chisel3.experimental.{DataMirror, Direction}
+-import freechips.rocketchip.config.Parameters
+-
+-import testchipip.{SerialIO, SerialAdapter}
+-
+-/**
+-  * Class which parameterizes the SerialBridge
+-  *
+-  * memoryRegionNameOpt, if unset, indicates that firesim-fesvr should not attempt to write a payload into DRAM through the loadmem unit.
+-  * This is suitable for target designs which do not use the FASED DRAM model.
+-  * If a FASEDBridge for the backing AXI4 memory is present, then memoryRegionNameOpt should be set to the same memory region name which is passed
+-  * to the FASEDBridge. This enables fast payload loading in firesim-fesvr through the loadmem unit.
+-  */
+-case class SerialBridgeParams(memoryRegionNameOpt: Option[String])
+-
+-class SerialBridge(memoryRegionNameOpt: Option[String]) extends BlackBox with Bridge[HostPortIO[SerialBridgeTargetIO], SerialBridgeModule] {
+-  val io = IO(new SerialBridgeTargetIO)
+-  val bridgeIO = HostPort(io)
+-  val constructorArg = Some(SerialBridgeParams(memoryRegionNameOpt))
+-  generateAnnotations()
+-}
+-
+-object SerialBridge {
+-  def apply(clock: Clock, port: SerialIO, memoryRegionNameOpt: Option[String])(implicit p: Parameters): SerialBridge = {
+-    val ep = Module(new SerialBridge(memoryRegionNameOpt))
+-    ep.io.serial <> port
+-    ep.io.clock := clock
+-    ep
+-  }
+-}
+-
+-class SerialBridgeTargetIO extends Bundle {
+-  val serial = Flipped(new SerialIO(SerialAdapter.SERIAL_TSI_WIDTH))
+-  val reset = Input(Bool())
+-  val clock = Input(Clock())
+-}
+-
+-class SerialBridgeModule(serialBridgeParams: SerialBridgeParams)(implicit p: Parameters)
+-    extends BridgeModule[HostPortIO[SerialBridgeTargetIO]]()(p) {
+-  lazy val module = new BridgeModuleImp(this) {
+-    val io = IO(new WidgetIO)
+-    val hPort = IO(HostPort(new SerialBridgeTargetIO))
+-
+-    val serialBits = SerialAdapter.SERIAL_TSI_WIDTH
+-    val inBuf  = Module(new Queue(UInt(serialBits.W), 16))
+-    val outBuf = Module(new Queue(UInt(serialBits.W), 16))
+-    val tokensToEnqueue = RegInit(0.U(32.W))
+-
+-    val target = hPort.hBits.serial
+-    val tFire = hPort.toHost.hValid && hPort.fromHost.hReady && tokensToEnqueue =/= 0.U
+-    val targetReset = tFire & hPort.hBits.reset
+-    inBuf.reset  := reset.asBool || targetReset
+-    outBuf.reset := reset.asBool || targetReset
+-
+-    hPort.toHost.hReady := tFire
+-    hPort.fromHost.hValid := tFire
+-
+-    target.in <> inBuf.io.deq
+-    inBuf.io.deq.ready := target.in.ready && tFire
+-
+-    outBuf.io.enq <> target.out
+-    outBuf.io.enq.valid := target.out.valid && tFire
+-
+-    genWOReg(inBuf.io.enq.bits, "in_bits")
+-    Pulsify(genWORegInit(inBuf.io.enq.valid, "in_valid", false.B), pulseLength = 1)
+-    genROReg(inBuf.io.enq.ready, "in_ready")
+-    genROReg(outBuf.io.deq.bits, "out_bits")
+-    genROReg(outBuf.io.deq.valid, "out_valid")
+-    Pulsify(genWORegInit(outBuf.io.deq.ready, "out_ready", false.B), pulseLength = 1)
+-
+-    val stepSize = Wire(UInt(32.W))
+-    val start = Wire(Bool())
+-    when (start) {
+-      tokensToEnqueue := stepSize
+-    }.elsewhen (tFire) {
+-      tokensToEnqueue := tokensToEnqueue - 1.U
+-    }
+-
+-    genWOReg(stepSize, "step_size")
+-    genROReg(tokensToEnqueue === 0.U, "done")
+-    Pulsify(genWORegInit(start, "start", false.B), pulseLength = 1)
+-
+-    genCRFile()
+-
+-    override def genHeader(base: BigInt, sb: StringBuilder) {
+-      import CppGenerationUtils._
+-      val headerWidgetName = getWName.toUpperCase
+-      super.genHeader(base, sb)
+-      val memoryRegionNameOpt = serialBridgeParams.memoryRegionNameOpt
+-      val offsetConstName = memoryRegionNameOpt.map(GetMemoryRegionOffsetConstName(_)).getOrElse("0")
+-      sb.append(genMacro(s"${headerWidgetName}_has_memory", memoryRegionNameOpt.isDefined.toString))
+-      sb.append(genMacro(s"${headerWidgetName}_memory_offset", offsetConstName))
+-    }
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/bridges/SimpleNICBridge.scala b/sim/firesim-lib/src/main/scala/bridges/SimpleNICBridge.scala
+deleted file mode 100644
+index 9da9f37ff..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/SimpleNICBridge.scala
++++ /dev/null
+@@ -1,264 +0,0 @@
+-//See LICENSE for license details
+-package firesim
+-package bridges
+-
+-import chisel3._
+-import chisel3.util._
+-import chisel3.experimental.{DataMirror, Direction}
+-import freechips.rocketchip.config.{Parameters, Field}
+-import freechips.rocketchip.diplomacy.AddressSet
+-import freechips.rocketchip.util._
+-
+-import midas.widgets._
+-import testchipip.{StreamIO, StreamChannel}
+-import icenet.{NICIOvonly, RateLimiterSettings}
+-import icenet.IceNIC._
+-import junctions.{NastiIO, NastiKey}
+-
+-object TokenQueueConsts {
+-  val TOKENS_PER_BIG_TOKEN = 7
+-  val BIG_TOKEN_WIDTH = (TOKENS_PER_BIG_TOKEN + 1) * 64
+-  val TOKEN_QUEUE_DEPTH = 6144
+-}
+-import TokenQueueConsts._
+-
+-case object LoopbackNIC extends Field[Boolean](false)
+-
+-class NICTargetIO extends Bundle {
+-  val clock = Input(Clock())
+-  val nic = Flipped(new NICIOvonly)
+-}
+-
+-class NICBridge(implicit p: Parameters) extends BlackBox with Bridge[HostPortIO[NICTargetIO], SimpleNICBridgeModule] {
+-  val io = IO(new NICTargetIO)
+-  val bridgeIO = HostPort(io)
+-  val constructorArg = None
+-  generateAnnotations()
+-}
+-
+-
+-object NICBridge {
+-  def apply(clock: Clock, nicIO: NICIOvonly)(implicit p: Parameters): NICBridge = {
+-    val ep = Module(new NICBridge)
+-    ep.io.nic <> nicIO
+-    ep.io.clock := clock
+-    ep
+-  }
+-}
+-
+-/* on a NIC token transaction:
+- * 1) simulation driver feeds an empty token to start:
+- *  data_in is garbage or real value (if exists)
+- *  data_in_valid is 0 or 1 respectively
+- *  data_out_ready is true (say host can always accept)
+- *
+- * 2) target responds:
+- *  data_out garbage or real value (if exists)
+- *  data_out_valid 0 or 1 respectively
+- *  data_in_ready would be 1, so driver knows how to construct the next token if there was data to send
+- *
+- *  repeat
+- */
+-
+-class ReadyValidLast extends Bundle {
+-  val data_last = Bool()
+-  val ready = Bool()
+-  val valid = Bool()
+-}
+-
+-class BIGToken extends Bundle {
+-  val data = Vec(7, UInt(64.W))
+-  val rvls = Vec(7, new ReadyValidLast())
+-  val pad = UInt(43.W)
+-}
+-
+-class HostToNICToken extends Bundle {
+-  val data_in = new StreamChannel(64)
+-  val data_in_valid = Bool()
+-  val data_out_ready = Bool()
+-}
+-
+-class NICToHostToken extends Bundle {
+-  val data_out = new StreamChannel(64)
+-  val data_out_valid = Bool()
+-  val data_in_ready = Bool()
+-}
+-
+-class BigTokenToNICTokenAdapter extends Module {
+-  val io = IO(new Bundle {
+-    val htnt = DecoupledIO(new HostToNICToken)
+-    val pcie_in = Flipped(DecoupledIO(UInt(512.W)))
+-  })
+-
+-  val pcieBundled = io.pcie_in.bits.asTypeOf(new BIGToken)
+-
+-  val xactHelper = DecoupledHelper(io.htnt.ready, io.pcie_in.valid)
+-
+-  val loopIter = RegInit(0.U(32.W))
+-  when (io.htnt.fire()) {
+-    loopIter := Mux(loopIter === 6.U, 0.U, loopIter + 1.U)
+-  }
+-
+-  io.htnt.bits.data_in.data := pcieBundled.data(loopIter)
+-  io.htnt.bits.data_in.keep := 0xFF.U
+-  io.htnt.bits.data_in.last := pcieBundled.rvls(loopIter).data_last
+-  io.htnt.bits.data_in_valid := pcieBundled.rvls(loopIter).valid
+-  io.htnt.bits.data_out_ready := pcieBundled.rvls(loopIter).ready
+-  io.htnt.valid := xactHelper.fire(io.htnt.ready)
+-  io.pcie_in.ready := xactHelper.fire(io.pcie_in.valid, loopIter === 6.U)
+-}
+-
+-class NICTokenToBigTokenAdapter extends Module {
+-  val io = IO(new Bundle {
+-    val ntht = Flipped(DecoupledIO(new NICToHostToken))
+-    val pcie_out = DecoupledIO(UInt(512.W))
+-  })
+-
+-  // step one, buffer 7 elems into registers. note that the 7th element is here 
+-  // just for convenience. in reality, it is not used since we're bypassing to
+-  // remove a cycle of latency
+-  val NTHT_BUF = Reg(Vec(7, new NICToHostToken))
+-  val specialCounter = RegInit(0.U(32.W))
+-
+-  when (io.ntht.valid) {
+-    NTHT_BUF(specialCounter) := io.ntht.bits
+-  }
+-
+-  io.ntht.ready := (specialCounter === 6.U && io.pcie_out.ready) || (specialCounter =/= 6.U)
+-  io.pcie_out.valid := specialCounter === 6.U && io.ntht.valid
+-  when ((specialCounter =/= 6.U) && io.ntht.valid) {
+-    specialCounter := specialCounter + 1.U
+-  } .elsewhen ((specialCounter === 6.U) && io.ntht.valid && io.pcie_out.ready) {
+-    specialCounter := 0.U
+-  } .otherwise {
+-    specialCounter := specialCounter
+-  }
+-  // step two, connect 6 elems + latest one to output (7 items)
+-  // TODO: attach pcie_out to data
+-
+-  // debug check to help check we're not losing tokens somewhere
+-  val token_trace_counter = RegInit(0.U(43.W))
+-  when (io.pcie_out.fire()) {
+-    token_trace_counter := token_trace_counter + 1.U
+-  } .otherwise {
+-    token_trace_counter := token_trace_counter
+-  }
+-
+-  val out = Wire(new BIGToken)
+-  for (i <- 0 until 6) {
+-    out.data(i) := NTHT_BUF(i).data_out.data
+-    out.rvls(i).data_last := NTHT_BUF(i).data_out.last
+-    out.rvls(i).ready := NTHT_BUF(i).data_in_ready
+-    out.rvls(i).valid := NTHT_BUF(i).data_out_valid
+-  }
+-  out.data(6) := io.ntht.bits.data_out.data
+-  out.rvls(6).data_last := io.ntht.bits.data_out.last
+-  out.rvls(6).ready := io.ntht.bits.data_in_ready
+-  out.rvls(6).valid := io.ntht.bits.data_out_valid
+-  out.pad := token_trace_counter
+-
+-  io.pcie_out.bits := out.asUInt
+-}
+-
+-class HostToNICTokenGenerator(nTokens: Int)(implicit p: Parameters) extends Module {
+-  val io = IO(new Bundle {
+-    val out = Decoupled(new HostToNICToken)
+-    val in = Flipped(Decoupled(new NICToHostToken))
+-  })
+-
+-  val s_init :: s_seed :: s_forward :: Nil = Enum(3)
+-  val state = RegInit(s_init)
+-
+-  val (_, seedDone) = Counter(state === s_seed && io.out.fire(), nTokens)
+-
+-  io.out.valid := state === s_seed || (state === s_forward && io.in.valid)
+-  io.out.bits.data_in_valid := state === s_forward && io.in.bits.data_out_valid
+-  io.out.bits.data_in := io.in.bits.data_out
+-  io.out.bits.data_out_ready := state === s_seed || io.in.bits.data_in_ready
+-  io.in.ready := state === s_forward && io.out.ready
+-
+-  when (state === s_init) { state := s_seed }
+-  when (seedDone) { state := s_forward }
+-}
+-
+-class SimpleNICBridgeModule(implicit p: Parameters)
+-    extends BridgeModule[HostPortIO[NICTargetIO]]()(p)
+-    with StreamToHostCPU
+-    with StreamFromHostCPU {
+-  // Stream mixin parameters
+-  val fromHostCPUQueueDepth = TOKEN_QUEUE_DEPTH
+-  val toHostCPUQueueDepth   = TOKEN_QUEUE_DEPTH
+-
+-  lazy val module = new BridgeModuleImp(this) {
+-    val io = IO(new WidgetIO)
+-    val hPort = IO(HostPort(new NICTargetIO))
+-
+-    val htnt_queue = Module(new Queue(new HostToNICToken, 10))
+-    val ntht_queue = Module(new Queue(new NICToHostToken, 10))
+-
+-    val bigtokenToNIC = Module(new BigTokenToNICTokenAdapter)
+-    val NICtokenToBig = Module(new NICTokenToBigTokenAdapter)
+-
+-    val target = hPort.hBits.nic
+-    val tFireHelper = DecoupledHelper(hPort.toHost.hValid,
+-                                      hPort.fromHost.hReady)
+-    val tFire = tFireHelper.fire
+-
+-    if (p(LoopbackNIC)) {
+-      val tokenGen = Module(new HostToNICTokenGenerator(10))
+-      htnt_queue.io.enq <> tokenGen.io.out
+-      tokenGen.io.in <> ntht_queue.io.deq
+-      NICtokenToBig.io.ntht.valid := false.B
+-      NICtokenToBig.io.ntht.bits := DontCare
+-      bigtokenToNIC.io.htnt.ready := false.B
+-    } else {
+-      NICtokenToBig.io.ntht <> ntht_queue.io.deq
+-      htnt_queue.io.enq <> bigtokenToNIC.io.htnt
+-    }
+-
+-    hPort.toHost.hReady := ntht_queue.io.enq.ready
+-    ntht_queue.io.enq.valid := hPort.toHost.hValid
+-    ntht_queue.io.enq.bits.data_out := target.out.bits
+-    ntht_queue.io.enq.bits.data_out_valid := target.out.valid
+-    ntht_queue.io.enq.bits.data_in_ready := true.B //target.in.ready
+-
+-    hPort.fromHost.hValid := htnt_queue.io.deq.valid
+-    htnt_queue.io.deq.ready := hPort.fromHost.hReady
+-    target.in.bits := htnt_queue.io.deq.bits.data_in
+-    target.in.valid := htnt_queue.io.deq.bits.data_in_valid
+-    //target.out.ready := htnt_queue.io.deq.bits.data_out_ready
+-
+-    bigtokenToNIC.io.pcie_in <> streamDeq
+-    streamEnq <> NICtokenToBig.io.pcie_out
+-
+-
+-    if (p(LoopbackNIC)) {
+-      target.rlimit.size := 8.U
+-      target.rlimit.period := 0.U
+-      target.rlimit.inc := 1.U
+-      target.macAddr := 0.U
+-    } else {
+-      val macAddrRegUpper = Reg(UInt(32.W))
+-      val macAddrRegLower = Reg(UInt(32.W))
+-      val rlimitSettings = Reg(UInt(32.W))
+-      val pauseThreshold = Reg(UInt(32.W))
+-      val pauseTimes = Reg(UInt(32.W))
+-
+-      target.rlimit := rlimitSettings.asTypeOf(new RateLimiterSettings)
+-      target.macAddr := Cat(macAddrRegUpper, macAddrRegLower)
+-      target.pauser.threshold := pauseThreshold(15, 0)
+-      target.pauser.quanta := pauseTimes(15, 0)
+-      target.pauser.refresh := pauseTimes(31, 16)
+-
+-      attach(macAddrRegUpper, "macaddr_upper", WriteOnly)
+-      attach(macAddrRegLower, "macaddr_lower", WriteOnly)
+-      attach(rlimitSettings, "rlimit_settings", WriteOnly)
+-      attach(pauseThreshold, "pause_threshold", WriteOnly)
+-      attach(pauseTimes, "pause_times", WriteOnly)
+-    }
+-
+-    genROReg(!tFire, "done")
+-
+-    genCRFile()
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/bridges/TracerVBridge.scala b/sim/firesim-lib/src/main/scala/bridges/TracerVBridge.scala
+deleted file mode 100644
+index c88cb6d84..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/TracerVBridge.scala
++++ /dev/null
+@@ -1,229 +0,0 @@
+-//See LICENSE for license details
+-package firesim.bridges
+-
+-import chisel3._
+-import chisel3.util._
+-import chisel3.util.experimental.BoringUtils
+-import freechips.rocketchip.config.{Parameters, Field}
+-import freechips.rocketchip.diplomacy.AddressSet
+-import freechips.rocketchip.util._
+-import freechips.rocketchip.rocket.TracedInstruction
+-import freechips.rocketchip.subsystem.RocketTilesKey
+-import freechips.rocketchip.tile.TileKey
+-
+-import testchipip.{TileTraceIO, DeclockedTracedInstruction, TracedInstructionWidths}
+-
+-import midas.targetutils.TriggerSource
+-import midas.widgets._
+-import testchipip.{StreamIO, StreamChannel}
+-import junctions.{NastiIO, NastiKey}
+-
+-case class TracerVKey(
+-  insnWidths: TracedInstructionWidths, // Widths of variable length fields in each TI
+-  vecSize: Int // The number of insns in the traced insn vec (= max insns retired at that core) 
+-)
+-
+-
+-class TracerVTargetIO(insnWidths: TracedInstructionWidths, numInsns: Int) extends Bundle {
+-  val trace = Input(new TileTraceIO(insnWidths, numInsns))
+-  val triggerCredit = Output(Bool())
+-  val triggerDebit = Output(Bool())
+-}
+-/**
+-  * Target-side module for the TracerV Bridge.
+-  *
+-  * @param insnWidths A case class containing the widths of configurable-length
+-  * fields in the trace interface.
+-  *
+-  * @param numInsns The number of instructions captured in a single a cycle
+-  * (generally, the commit width of the pipeline)
+-  *
+-  * Warning: If you're not going to use the companion object to instantiate
+-  * this bridge you must call [[TracerVBridge.generateTriggerAnnotations] _in
+-  * the parent module_.
+-  */
+-class TracerVBridge(insnWidths: TracedInstructionWidths, numInsns: Int) extends BlackBox
+-    with Bridge[HostPortIO[TracerVTargetIO], TracerVBridgeModule] {
+-  val io = IO(new TracerVTargetIO(insnWidths, numInsns))
+-  val bridgeIO = HostPort(io)
+-  val constructorArg = Some(TracerVKey(insnWidths, numInsns))
+-  generateAnnotations()
+-  // Use in parent module: annotates the bridge instance's ports to indicate its trigger sources
+-  // def generateTriggerAnnotations(): Unit = TriggerSource(io.triggerCredit, io.triggerDebit)
+-  def generateTriggerAnnotations(): Unit =
+-    TriggerSource.evenUnderReset(WireDefault(io.triggerCredit), WireDefault(io.triggerDebit))
+-
+-  // To placate CheckHighForm, uniquify blackbox module names by using the
+-  // bridge's instruction count as a string suffix. This ensures that TracerV
+-  // blackboxes with different instruction counts will have different defnames,
+-  // preventing FIRRTL CheckHighForm failure when using a chipyard "Hetero"
+-  // config. While a black box parameter relaxes the check on leaf field
+-  // widths, CheckHighForm does not permit parameterizations of the length of a
+-  // Vec enclosing those fields (as is the case here), since the Vec is lost in
+-  // a lowered verilog module.
+-  //
+-  // See https://github.com/firesim/firesim/issues/729.
+-  def defnameSuffix = s"_${numInsns}Wide_" + insnWidths.toString.replaceAll("[(),]", "_")
+-
+-  override def desiredName = super.desiredName + defnameSuffix
+-}
+-
+-object TracerVBridge {
+-  def apply(tracedInsns: TileTraceIO)(implicit p:Parameters): TracerVBridge = {
+-    val ep = Module(new TracerVBridge(tracedInsns.insnWidths, tracedInsns.numInsns))
+-    withClockAndReset(tracedInsns.clock, tracedInsns.reset) { ep.generateTriggerAnnotations }
+-    ep.io.trace := tracedInsns
+-    ep
+-  }
+-}
+-
+-class TracerVBridgeModule(key: TracerVKey)(implicit p: Parameters)
+-    extends BridgeModule[HostPortIO[TracerVTargetIO]]()(p)
+-    with StreamToHostCPU {
+-
+-  // StreamToHostCPU  mixin parameters
+-  // Use the legacy NIC depth
+-  val toHostCPUQueueDepth  = TokenQueueConsts.TOKEN_QUEUE_DEPTH
+-
+-  lazy val module = new BridgeModuleImp(this) {
+-    val io = IO(new WidgetIO)
+-    val hPort = IO(HostPort(new TracerVTargetIO(key.insnWidths, key.vecSize)))
+-
+-
+-    // Mask off valid committed instructions when under reset
+-    val traces = hPort.hBits.trace.insns.map({ unmasked =>
+-      val masked = WireDefault(unmasked)
+-      masked.valid := unmasked.valid && !hPort.hBits.trace.reset.asBool
+-      masked
+-    })
+-    private val pcWidth = traces.map(_.iaddr.getWidth).max
+-    private val insnWidth = traces.map(_.insn.getWidth).max
+-    val cycleCountWidth = 64
+-
+-    // Set after trigger-dependent memory-mapped registers have been set, to
+-    // prevent spurious credits
+-    val initDone    = genWORegInit(Wire(Bool()), "initDone", false.B)
+-    // When unset, diables token capture to improve FMR, while still enabling the
+-    // use of TracerV-based triggers
+-    val traceEnable    = genWORegInit(Wire(Bool()), "traceEnable", true.B)
+-    //Program Counter trigger value can be configured externally
+-    val hostTriggerPCWidthOffset = pcWidth - p(CtrlNastiKey).dataBits
+-    val hostTriggerPCLowWidth = if (hostTriggerPCWidthOffset > 0) p(CtrlNastiKey).dataBits else pcWidth
+-    val hostTriggerPCHighWidth = if (hostTriggerPCWidthOffset > 0) hostTriggerPCWidthOffset else 0
+-
+-    val hostTriggerPCStartHigh = RegInit(0.U(hostTriggerPCHighWidth.W))
+-    val hostTriggerPCStartLow = RegInit(0.U(hostTriggerPCLowWidth.W))
+-    attach(hostTriggerPCStartHigh, "hostTriggerPCStartHigh", WriteOnly)
+-    attach(hostTriggerPCStartLow, "hostTriggerPCStartLow", WriteOnly)
+-    val hostTriggerPCStart = Cat(hostTriggerPCStartHigh, hostTriggerPCStartLow)
+-    val triggerPCStart = RegInit(0.U(pcWidth.W))
+-    triggerPCStart := hostTriggerPCStart
+-
+-    val hostTriggerPCEndHigh = RegInit(0.U(hostTriggerPCHighWidth.W))
+-    val hostTriggerPCEndLow = RegInit(0.U(hostTriggerPCLowWidth.W))
+-    attach(hostTriggerPCEndHigh, "hostTriggerPCEndHigh", WriteOnly)
+-    attach(hostTriggerPCEndLow, "hostTriggerPCEndLow", WriteOnly)
+-    val hostTriggerPCEnd = Cat(hostTriggerPCEndHigh, hostTriggerPCEndLow)
+-    val triggerPCEnd = RegInit(0.U(pcWidth.W))
+-    triggerPCEnd := hostTriggerPCEnd
+-
+-    //Cycle count trigger
+-    val hostTriggerCycleCountWidthOffset = 64 - p(CtrlNastiKey).dataBits
+-    val hostTriggerCycleCountLowWidth = if (hostTriggerCycleCountWidthOffset > 0) p(CtrlNastiKey).dataBits else 64
+-    val hostTriggerCycleCountHighWidth = if (hostTriggerCycleCountWidthOffset > 0) hostTriggerCycleCountWidthOffset else 0
+-
+-    val hostTriggerCycleCountStartHigh = RegInit(0.U(hostTriggerCycleCountHighWidth.W))
+-    val hostTriggerCycleCountStartLow = RegInit(0.U(hostTriggerCycleCountLowWidth.W))
+-    attach(hostTriggerCycleCountStartHigh, "hostTriggerCycleCountStartHigh", WriteOnly)
+-    attach(hostTriggerCycleCountStartLow, "hostTriggerCycleCountStartLow", WriteOnly)
+-    val hostTriggerCycleCountStart = Cat(hostTriggerCycleCountStartHigh, hostTriggerCycleCountStartLow)
+-    val triggerCycleCountStart = RegInit(0.U(cycleCountWidth.W))
+-    triggerCycleCountStart := hostTriggerCycleCountStart
+-
+-    val hostTriggerCycleCountEndHigh = RegInit(0.U(hostTriggerCycleCountHighWidth.W))
+-    val hostTriggerCycleCountEndLow = RegInit(0.U(hostTriggerCycleCountLowWidth.W))
+-    attach(hostTriggerCycleCountEndHigh, "hostTriggerCycleCountEndHigh", WriteOnly)
+-    attach(hostTriggerCycleCountEndLow, "hostTriggerCycleCountEndLow", WriteOnly)
+-    val hostTriggerCycleCountEnd = Cat(hostTriggerCycleCountEndHigh, hostTriggerCycleCountEndLow)
+-    val triggerCycleCountEnd = RegInit(0.U(cycleCountWidth.W))
+-    triggerCycleCountEnd := hostTriggerCycleCountEnd
+-
+-    val trace_cycle_counter = RegInit(0.U(cycleCountWidth.W))
+-
+-    //target instruction type trigger (trigger through target software)
+-    //can configure the trigger instruction type externally though simulation driver
+-    val hostTriggerStartInst = RegInit(0.U(insnWidth.W))
+-    val hostTriggerStartInstMask = RegInit(0.U(insnWidth.W))
+-    attach(hostTriggerStartInst, "hostTriggerStartInst", WriteOnly)
+-    attach(hostTriggerStartInstMask, "hostTriggerStartInstMask", WriteOnly)
+-
+-    val hostTriggerEndInst = RegInit(0.U(insnWidth.W))
+-    val hostTriggerEndInstMask = RegInit(0.U(insnWidth.W))
+-    attach(hostTriggerEndInst, "hostTriggerEndInst", WriteOnly)
+-    attach(hostTriggerEndInstMask, "hostTriggerEndInstMask", WriteOnly)
+-
+-    //trigger selector
+-    val triggerSelector = RegInit(0.U((p(CtrlNastiKey).dataBits).W))
+-    attach(triggerSelector, "triggerSelector", WriteOnly)
+-
+-    //set the trigger
+-    //assert(triggerCycleCountEnd >= triggerCycleCountStart)
+-    val triggerCycleCountVal = RegInit(false.B)
+-    triggerCycleCountVal := (trace_cycle_counter >= triggerCycleCountStart) & (trace_cycle_counter <= triggerCycleCountEnd)
+-
+-    val triggerPCValVec = RegInit(VecInit(Seq.fill(traces.length)(false.B)))
+-    traces.zipWithIndex.foreach { case (trace, i) =>
+-      when (trace.valid) {
+-        when (triggerPCStart === trace.iaddr) {
+-          triggerPCValVec(i) := true.B
+-        } .elsewhen ((triggerPCEnd === trace.iaddr) && triggerPCValVec(i)) {
+-          triggerPCValVec(i) := false.B
+-        }
+-      }
+-    }
+-
+-    val triggerInstValVec = RegInit(VecInit(Seq.fill(traces.length)(false.B)))
+-    traces.zipWithIndex.foreach { case (trace, i) =>
+-      when (trace.valid) {
+-        when (!((hostTriggerStartInst ^ trace.insn) & hostTriggerStartInstMask).orR) {
+-          triggerInstValVec(i) := true.B
+-        } .elsewhen (!((hostTriggerEndInst ^ trace.insn) & hostTriggerEndInstMask).orR) {
+-          triggerInstValVec(i) := false.B
+-        }
+-      }
+-    }
+-
+-    val trigger = MuxLookup(triggerSelector, false.B, Seq(
+-      0.U -> true.B,
+-      1.U -> triggerCycleCountVal,
+-      2.U -> triggerPCValVec.reduce(_ || _),
+-      3.U -> triggerInstValVec.reduce(_ || _)))
+-
+-    val tFireHelper = DecoupledHelper(streamEnq.ready, hPort.toHost.hValid, hPort.fromHost.hReady, initDone)
+-
+-    val triggerReg = RegEnable(trigger, false.B, tFireHelper.fire)
+-    hPort.hBits.triggerDebit := !trigger && triggerReg
+-    hPort.hBits.triggerCredit := trigger && !triggerReg
+-
+-    val uint_traces = (traces map (trace => Cat(trace.valid, trace.iaddr).pad(64))).reverse
+-    streamEnq.bits := Cat(uint_traces :+ trace_cycle_counter.pad(64)).pad(BridgeStreamConstants.streamWidthBits)
+-
+-    hPort.toHost.hReady := tFireHelper.fire(hPort.toHost.hValid)
+-    hPort.fromHost.hValid := tFireHelper.fire(hPort.fromHost.hReady)
+-
+-    streamEnq.valid := tFireHelper.fire(streamEnq.ready, trigger) && traceEnable
+-
+-    when (tFireHelper.fire) {
+-      trace_cycle_counter := trace_cycle_counter + 1.U
+-    }
+-
+-    genCRFile()
+-    override def genHeader(base: BigInt, sb: StringBuilder) {
+-      import CppGenerationUtils._
+-      val headerWidgetName = getWName.toUpperCase
+-      super.genHeader(base, sb)
+-      sb.append(genConstStatic(s"${headerWidgetName}_max_core_ipc", UInt32(traces.size)))
+-      emitClockDomainInfo(headerWidgetName, sb)
+-    }
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/bridges/UARTBridge.scala b/sim/firesim-lib/src/main/scala/bridges/UARTBridge.scala
+deleted file mode 100644
+index aab3023b9..000000000
+--- a/sim/firesim-lib/src/main/scala/bridges/UARTBridge.scala
++++ /dev/null
+@@ -1,202 +0,0 @@
+-//See LICENSE for license details
+-package firesim.bridges
+-
+-import midas.widgets._
+-
+-import chisel3._
+-import chisel3.util._
+-import chisel3.experimental.{DataMirror, Direction}
+-import freechips.rocketchip.config.Parameters
+-import freechips.rocketchip.subsystem.PeripheryBusKey
+-import sifive.blocks.devices.uart.{UARTPortIO, UARTParams}
+-
+-//Note: This file is heavily commented as it serves as a bridge walkthrough
+-//example in the FireSim docs
+-
+-// DOC include start: UART Bridge Target-Side Interface
+-class UARTBridgeTargetIO(val uParams: UARTParams) extends Bundle {
+-  val clock = Input(Clock())
+-  val uart = Flipped(new UARTPortIO(uParams))
+-  // Note this reset is optional and used only to reset target-state modelled
+-  // in the bridge This reset just like any other Bool included in your target
+-  // interface, simply appears as another Bool in the input token.
+-  val reset = Input(Bool())
+-}
+-// DOC include end: UART Bridge Target-Side Interface
+-
+-// DOC include start: UART Bridge Constructor Arg
+-// Out bridge module constructor argument. This captures all of the extra
+-// metadata we'd like to pass to the host-side BridgeModule. Note, we need to
+-// use a single case class to do so, even if it is simply to wrap a primitive
+-// type, as is the case for UART (int)
+-case class UARTKey(uParams: UARTParams, div: Int)
+-// DOC include end: UART Bridge Constructor Arg
+-
+-// DOC include start: UART Bridge Target-Side Module
+-class UARTBridge(uParams: UARTParams)(implicit p: Parameters) extends BlackBox
+-    with Bridge[HostPortIO[UARTBridgeTargetIO], UARTBridgeModule] {
+-  // Since we're extending BlackBox this is the port will connect to in our target's RTL
+-  val io = IO(new UARTBridgeTargetIO(uParams))
+-  // Implement the bridgeIO member of Bridge using HostPort. This indicates that
+-  // we want to divide io, into a bidirectional token stream with the input
+-  // token corresponding to all of the inputs of this BlackBox, and the output token consisting of 
+-  // all of the outputs from the BlackBox
+-  val bridgeIO = HostPort(io)
+-
+-  // Do some intermediate work to compute our host-side BridgeModule's constructor argument
+-  val frequency = p(PeripheryBusKey).dtsFrequency.get
+-  val baudrate = uParams.initBaudRate
+-  val div = (frequency / baudrate).toInt
+-
+-  // And then implement the constructorArg member
+-  val constructorArg = Some(UARTKey(uParams, div))
+-
+-  // Finally, and this is critical, emit the Bridge Annotations -- without
+-  // this, this BlackBox would appear like any other BlackBox to Golden Gate
+-  generateAnnotations()
+-}
+-// DOC include end: UART Bridge Target-Side Module
+-
+-// DOC include start: UART Bridge Companion Object
+-object UARTBridge {
+-  def apply(clock: Clock, uart: UARTPortIO)(implicit p: Parameters): UARTBridge = {
+-    val ep = Module(new UARTBridge(uart.c))
+-    ep.io.uart <> uart
+-    ep.io.clock := clock
+-    ep
+-  }
+-}
+-// DOC include end: UART Bridge Companion Object
+-
+-// DOC include start: UART Bridge Header
+-// Our UARTBridgeModule definition, note:
+-// 1) it takes one parameter, key, of type UARTKey --> the same case class we captured from the target-side
+-// 2) It accepts one implicit parameter of type Parameters
+-// 3) It extends BridgeModule passing the type of the HostInterface
+-//
+-// While the Scala type system will check if you parameterized BridgeModule
+-// correctly, the types of the constructor arugument (in this case UARTKey),
+-// don't match, you'll only find out later when Golden Gate attempts to generate your module.
+-class UARTBridgeModule(key: UARTKey)(implicit p: Parameters) extends BridgeModule[HostPortIO[UARTBridgeTargetIO]]()(p) {
+-  lazy val module = new BridgeModuleImp(this) {
+-    val div = key.div
+-    // This creates the interfaces for all of the host-side transport
+-    // AXI4-lite for the simulation control bus, =
+-    // AXI4 for DMA
+-    val io = IO(new WidgetIO())
+-
+-    // This creates the host-side interface of your TargetIO
+-    val hPort = IO(HostPort(new UARTBridgeTargetIO(key.uParams)))
+-
+-    // Generate some FIFOs to capture tokens...
+-    val txfifo = Module(new Queue(UInt(8.W), 128))
+-    val rxfifo = Module(new Queue(UInt(8.W), 128))
+-
+-    val target = hPort.hBits.uart
+-    // In general, your BridgeModule will not need to do work every host-cycle. In simple Bridges,
+-    // we can do everything in a single host-cycle -- fire captures all of the
+-    // conditions under which we can consume and input token and produce a new
+-    // output token
+-    val fire = hPort.toHost.hValid && // We have a valid input token: toHost ~= leaving the transformed RTL
+-               hPort.fromHost.hReady && // We have space to enqueue a new output token
+-               txfifo.io.enq.ready      // We have space to capture new TX data
+-    val targetReset = fire & hPort.hBits.reset
+-    rxfifo.reset := reset.asBool || targetReset
+-    txfifo.reset := reset.asBool || targetReset
+-
+-    hPort.toHost.hReady := fire
+-    hPort.fromHost.hValid := fire
+-    // DOC include end: UART Bridge Header
+-    val sTxIdle :: sTxWait :: sTxData :: sTxBreak :: Nil = Enum(4)
+-    val txState = RegInit(sTxIdle)
+-    val txData = Reg(UInt(8.W))
+-    // iterate through bits in byte to deserialize
+-    val (txDataIdx, txDataWrap) = Counter(txState === sTxData && fire, 8)
+-    // iterate using div to convert clock rate to baud
+-    val (txBaudCount, txBaudWrap) = Counter(txState === sTxWait && fire, div)
+-    val (txSlackCount, txSlackWrap) = Counter(txState === sTxIdle && target.txd === 0.U && fire, 4)
+-
+-    switch(txState) {
+-      is(sTxIdle) {
+-        when(txSlackWrap) {
+-          txData  := 0.U
+-          txState := sTxWait
+-        }
+-      }
+-      is(sTxWait) {
+-        when(txBaudWrap) {
+-          txState := sTxData
+-        }
+-      }
+-      is(sTxData) {
+-        when(fire) {
+-          txData := txData | (target.txd << txDataIdx)
+-        }
+-        when(txDataWrap) {
+-          txState := Mux(target.txd === 1.U, sTxIdle, sTxBreak)
+-        }.elsewhen(fire) {
+-          txState := sTxWait
+-        }
+-      }
+-      is(sTxBreak) {
+-        when(target.txd === 1.U && fire) {
+-          txState := sTxIdle
+-        }
+-      }
+-    }
+-
+-    txfifo.io.enq.bits  := txData
+-    txfifo.io.enq.valid := txDataWrap
+-
+-    val sRxIdle :: sRxStart :: sRxData :: Nil = Enum(3)
+-    val rxState = RegInit(sRxIdle)
+-    // iterate using div to convert clock rate to baud
+-    val (rxBaudCount, rxBaudWrap) = Counter(fire, div)
+-    // iterate through bits in byte to deserialize
+-    val (rxDataIdx, rxDataWrap) = Counter(rxState === sRxData && fire && rxBaudWrap, 8)
+-
+-    target.rxd := 1.U
+-    switch(rxState) {
+-      is(sRxIdle) {
+-        target.rxd := 1.U
+-        when (rxBaudWrap && rxfifo.io.deq.valid) {
+-          rxState := sRxStart
+-        }
+-      }
+-      is(sRxStart) {
+-        target.rxd := 0.U
+-        when(rxBaudWrap) {
+-          rxState := sRxData
+-        }
+-      }
+-      is(sRxData) {
+-        target.rxd := (rxfifo.io.deq.bits >> rxDataIdx)(0)
+-        when(rxDataWrap && rxBaudWrap) {
+-          rxState := sRxIdle
+-        }
+-      }
+-    }
+-    rxfifo.io.deq.ready := (rxState === sRxData) && rxDataWrap && rxBaudWrap && fire
+-
+-    // DOC include start: UART Bridge Footer
+-    // Exposed the head of the queue and the valid bit as a read-only registers
+-    // with name "out_bits" and out_valid respectively
+-    genROReg(txfifo.io.deq.bits, "out_bits")
+-    genROReg(txfifo.io.deq.valid, "out_valid")
+-
+-    // Generate a writeable register, "out_ready", that when written to dequeues
+-    // a single element in the tx_fifo. Pulsify derives the register back to false
+-    // after pulseLength cycles to prevent multiple dequeues
+-    Pulsify(genWORegInit(txfifo.io.deq.ready, "out_ready", false.B), pulseLength = 1)
+-
+-    // Generate regisers for the rx-side of the UART; this is eseentially the reverse of the above
+-    genWOReg(rxfifo.io.enq.bits, "in_bits")
+-    Pulsify(genWORegInit(rxfifo.io.enq.valid, "in_valid", false.B), pulseLength = 1)
+-    genROReg(rxfifo.io.enq.ready, "in_ready")
+-
+-    // This method invocation is required to wire up all of the MMIO registers to
+-    // the simulation control bus (AXI4-lite)
+-    genCRFile()
+-    // DOC include end: UART Bridge Footer
+-  }
+-}
+diff --git a/sim/firesim-lib/src/main/scala/configs/CompilerConfigs.scala b/sim/firesim-lib/src/main/scala/configs/CompilerConfigs.scala
+index f1a8c4090..88641e0c9 100644
+--- a/sim/firesim-lib/src/main/scala/configs/CompilerConfigs.scala
++++ b/sim/firesim-lib/src/main/scala/configs/CompilerConfigs.scala
+@@ -4,7 +4,6 @@ package firesim.configs
+ import firrtl.options.Dependency
+ import freechips.rocketchip.config.{Parameters, Config, Field}
+ import midas.{TargetTransforms, HostTransforms}
+-import firesim.bridges._
+ 
+ // Experimental: mixing this in will enable assertion synthesis
+ class WithSynthAsserts extends Config((site, here, up) => {
+@@ -30,11 +29,6 @@ class MCRams extends WithMultiCycleRamModels
+ 
+ class MTModels extends WithModelMultiThreading
+ 
+-// Enables NIC loopback the NIC widget
+-class WithNICWidgetLoopback  extends Config((site, here, up) => {
+-  case LoopbackNIC => true
+-})
+-
+ // ADDITIONAL TARGET TRANSFORMATIONS
+ // These run on the the Target FIRRTL before Target-toHost Bridges are extracted ,
+ // and decoupling is introduced
+diff --git a/sim/firesim-lib/src/main/scala/configs/FASEDTargetConfigs.scala b/sim/firesim-lib/src/main/scala/configs/FASEDTargetConfigs.scala
+index 0cd34b567..9444e762f 100644
+--- a/sim/firesim-lib/src/main/scala/configs/FASEDTargetConfigs.scala
++++ b/sim/firesim-lib/src/main/scala/configs/FASEDTargetConfigs.scala
+@@ -5,7 +5,6 @@ import freechips.rocketchip.config.{Parameters, Config, Field}
+ 
+ import midas.{HostTransforms, TargetTransforms}
+ import midas.models._
+-import firesim.bridges._
+ 
+ case object MemModelKey extends Field[BaseConfig]
+ case object BaseParamsKey extends Field[BaseParams]
+diff --git a/sim/midas/src/main/scala/midas/core/Channel.scala b/sim/midas/src/main/scala/midas/core/Channel.scala
+index e6f53cb10..0c755bcf9 100644
+--- a/sim/midas/src/main/scala/midas/core/Channel.scala
++++ b/sim/midas/src/main/scala/midas/core/Channel.scala
+@@ -25,20 +25,54 @@ class PipeChannelIO[T <: ChLeafType](gen: T)(implicit p: Parameters) extends Bun
+ 
+ class PipeChannel[T <: ChLeafType](
+     val gen: T,
++    val rst: T,
+     latency: Int
+   )(implicit p: Parameters) extends Module {
+   require(latency == 0 || latency == 1)
+ 
+   val io = IO(new PipeChannelIO(gen))
+-  val tokens = Module(new ShiftQueue(gen, 2))
+-  tokens.io.enq <> io.in
+-  io.out <> tokens.io.deq
++
++  // the output may be used as the global reset of the design
++  // make it register-out and also respect the given reset value
++  val in = Wire(DecoupledIO(gen))
++
++  in.valid     := io.in.valid
++  in.bits      := io.in.bits
++  io.in.ready  := in.ready
++
++  val vld_q = Wire(Vec(2, Bool()))
++  val dat_q = Wire(Vec(2, gen))
++
++  vld_q(0) := RegNext(Mux(io.out.ready,
++                          in.fire || vld_q(1),
++                          in.fire || vld_q(0)),
++                      false.B)
++  vld_q(1) := RegNext(Mux(io.out.ready,
++                          false.B,
++                          in.fire && vld_q(0) || vld_q(1)),
++                      false.B)
++
++  dat_q(0) := RegEnable(Mux(vld_q(1),
++                            dat_q(1),
++                            in.bits),
++                        rst,
++                        Mux(io.out.ready,
++                            in.fire ||  vld_q(1),
++                            in.fire && !vld_q(0)))
++  dat_q(1) := RegEnable(in.bits,
++                        Mux(io.out.ready,
++                            false.B,
++                            in.fire &&  vld_q(0)))
++
++  io.out.valid :=  vld_q(0)
++  io.out.bits  :=  dat_q(0)
++  in.ready     := !vld_q(1)
+ 
+   if (latency == 1) {
+-    val initializing = RegNext(reset.asBool)
+-    when(initializing) {
+-      tokens.io.enq.valid := true.B
+-      tokens.io.enq.bits := 0.U.asTypeOf(tokens.io.enq.bits)
++    val initializing = RegNext(reset.asBool, true.B)
++    when (initializing) {
++      in.valid    := true.B
++      in.bits     := rst
+       io.in.ready := false.B
+     }
+   }
+@@ -74,7 +108,7 @@ class PipeChannelUnitTest(
+ 
+   override val testName = "PipeChannel Unit Test"
+   val payloadWidth = 8
+-  val dut = Module(new PipeChannel(UInt(payloadWidth.W), latency))
++  val dut = Module(new PipeChannel(UInt(payloadWidth.W), 0.U, latency))
+   val referenceInput  = Wire(UInt(payloadWidth.W))
+   val referenceOutput = ShiftRegister(referenceInput, latency)
+ 
+diff --git a/sim/midas/src/main/scala/midas/core/SimWrapper.scala b/sim/midas/src/main/scala/midas/core/SimWrapper.scala
+index ee379ccd6..56090151e 100644
+--- a/sim/midas/src/main/scala/midas/core/SimWrapper.scala
++++ b/sim/midas/src/main/scala/midas/core/SimWrapper.scala
+@@ -342,7 +342,7 @@ class SimWrapper(val config: SimWrapperConfig)(implicit val p: Parameters) exten
+       require(chAnno.sources == None || chAnno.sources.get.size == 1, "Can't aggregate wire-type channels yet")
+       require(chAnno.sinks   == None || chAnno.sinks  .get.size == 1, "Can't aggregate wire-type channels yet")
+       val latency = chAnno.channelInfo.asInstanceOf[fame.PipeChannel].latency
+-      val channel = Module(new PipeChannel(getPipeChannelType(chAnno), latency))
++      val channel = Module(new PipeChannel(getPipeChannelType(chAnno), chAnno.globalName.contains("_reset").B, latency))
+       channel suggestName s"PipeChannel_${chAnno.globalName}"
+ 
+       target.io.wirePortMap(chAnno.globalName).sink match {
+diff --git a/sim/midas/src/main/scala/midas/passes/MidasTransforms.scala b/sim/midas/src/main/scala/midas/passes/MidasTransforms.scala
+index 08e67a673..93adfe0c2 100644
+--- a/sim/midas/src/main/scala/midas/passes/MidasTransforms.scala
++++ b/sim/midas/src/main/scala/midas/passes/MidasTransforms.scala
+@@ -26,8 +26,7 @@ private[midas] class MidasTransforms extends Transform {
+     val p = state.annotations.collectFirst({ case midas.stage.phases.ConfigParametersAnnotation(p)  => p }).get
+     val optionalTargetTransforms = if (p(GenerateMultiCycleRamModels)) Seq(
+       new fame.LabelSRAMModels,
+-      new ResolveAndCheck,
+-      new EmitFirrtl("post-wrap-sram-models.fir"))
++      new ResolveAndCheck)
+     else Seq()
+ 
+     val xforms = Seq(
+@@ -43,71 +42,48 @@ private[midas] class MidasTransforms extends Transform {
+       new firrtl.transforms.DeadCodeElimination,
+       new firrtl.transforms.InferResets,
+       firrtl.passes.CheckTypes,
+-      CoerceAsyncToSyncReset,
+       EnsureNoTargetIO,
+       new BridgeExtraction,
+       new ResolveAndCheck,
+-      new EmitFirrtl("post-bridge-extraction.fir"),
+-      new fame.EmitFAMEAnnotations("post-bridge-extraction.json"),
+       new HighFirrtlToMiddleFirrtl,
+       new MiddleFirrtlToLowFirrtl,
+       new AutoCounterTransform,
+-      new EmitFirrtl("post-autocounter.fir"),
+-      new fame.EmitFAMEAnnotations("post-autocounter.json"),
+       new ResolveAndCheck,
+       new AssertionSynthesis,
+       new PrintSynthesis,
+       new ResolveAndCheck,
+-      new EmitFirrtl("post-debug-synthesis.fir"),
+-      new fame.EmitFAMEAnnotations("post-debug-synthesis.json"),
+       // All trigger sources and sinks must exist in the target RTL before this pass runs
+       TriggerWiring,
+-      new EmitFirrtl("post-trigger-wiring.fir"),
+-      new fame.EmitFAMEAnnotations("post-trigger-wiring.json"),
+       GlobalResetConditionWiring,
+       // We should consider moving these lower
+       ChannelClockInfoAnalysis,
+       UpdateBridgeClockInfo,
+       fame.WrapTop,
+       fame.LabelMultiThreadedInstances,
+-      new ResolveAndCheck,
+-      new EmitFirrtl("post-wrap-top.fir")) ++
++      new ResolveAndCheck) ++
+     optionalTargetTransforms ++
+     Seq(
+       new fame.ExtractModel,
+       new ResolveAndCheck,
+-      new EmitFirrtl("post-extract-model.fir"),
+       new HighFirrtlToMiddleFirrtl,
+       new MiddleFirrtlToLowFirrtl,
+       // Dedup here in 'AQB form' after lowering instance bulk connects
+       new midas.passes.EnableAndRunDedupOnce,
+       fame.PromotePassthroughConnections,
+       new ResolveAndCheck,
+-      new EmitFirrtl("post-promote-passthrough.fir"),
+-      new fame.EmitFAMEAnnotations("post-promote-passthrough.json"),
+       new fame.FAMEDefaults,
+-      new EmitFirrtl("post-fame-defaults.fir"),
+-      new fame.EmitFAMEAnnotations("post-fame-defaults.json"),
+       fame.FindDefaultClocks,
+-      new fame.EmitFAMEAnnotations("post-find-default-clocks.json"),
+       new fame.ChannelExcision,
+-      new fame.EmitFAMEAnnotations("post-channel-excision.json"),
+-      new EmitFirrtl("post-channel-excision.fir"),
+       // We could delay adding FAMETransformAnnotations to all top modules to here (not used before this)
+       new fame.InferModelPorts,
+-      new fame.EmitFAMEAnnotations("post-infer-model-ports.json"),
+       new fame.FAMETransform,
+       DefineAbstractClockGate,
+       fame.AddRemainingFanoutAnnotations,
+-      new EmitFirrtl("post-fame-transform.fir"),
+-      new fame.EmitFAMEAnnotations("post-fame-transform.json"),
+       new ResolveAndCheck,
+       fame.MultiThreadFAME5Models,
+       new ResolveAndCheck,
+-      new passes.InlineInstances,
+       passes.ResolveKinds,
+       new fame.EmitAndWrapRAMModels,
+-      new EmitFirrtl("post-gen-sram-models.fir"),
+       new ResolveAndCheck,
+       new SimulationMapping(state.circuit.main),
+       xilinx.HostSpecialization,
+diff --git a/sim/midas/src/main/scala/midas/passes/SimulationMapping.scala b/sim/midas/src/main/scala/midas/passes/SimulationMapping.scala
+index cc89c26a2..ef5bbe5d4 100644
+--- a/sim/midas/src/main/scala/midas/passes/SimulationMapping.scala
++++ b/sim/midas/src/main/scala/midas/passes/SimulationMapping.scala
+@@ -124,7 +124,6 @@ private[passes] class SimulationMapping(targetName: String) extends firrtl.Trans
+       annotations = innerAnnos ++ outerState.annotations,
+       renames     = Some(renameMap)
+     )
+-    writeState(linkedState, "post-sim-mapping.fir")
+     linkedState.copy(annotations = linkedState.annotations ++ generateHeaderAnnos(shim))
+   }
+ }
+diff --git a/sim/midas/src/main/scala/midas/widgets/LoadMem.scala b/sim/midas/src/main/scala/midas/widgets/LoadMem.scala
+index c68deeffa..9fe2c3974 100644
+--- a/sim/midas/src/main/scala/midas/widgets/LoadMem.scala
++++ b/sim/midas/src/main/scala/midas/widgets/LoadMem.scala
+@@ -168,7 +168,7 @@ class LoadMemWidget(val totalDRAMAllocated: BigInt)(implicit p: Parameters) exte
+   memNasti.ar.valid := rAddrQ.valid
+   rAddrQ.ready := memNasti.ar.ready
+ 
+-  val rDataQ = Module(new MultiWidthFifo(hWidth, cWidth, 2))
++  val rDataQ = Module(new MultiWidthFifo(hWidth, cWidth, hWidth / cWidth))
+   attachDecoupledSource(rDataQ.io.out, "R_DATA")
+   memNasti.r.ready := rDataQ.io.in.ready
+   rDataQ.io.in.valid := memNasti.r.valid
+diff --git a/sim/midas/src/main/verilog/BUFGCE.v b/sim/midas/src/main/verilog/BUFGCE.v
+index c279d05b3..774cae47d 100644
+--- a/sim/midas/src/main/verilog/BUFGCE.v
++++ b/sim/midas/src/main/verilog/BUFGCE.v
+@@ -6,19 +6,10 @@ module BUFGCE(
+    reg       enable_latch;
+    always @(posedge I)
+      enable_latch <= CE;
+-`ifdef VERILATOR
+-   // Note: Verilator doesn't like procedural clock gates
+-   // They cause combinational loop errors and UNOPT_FLAT
+-   assign O = (I & enable_latch);
+-`else
+-   // Note: VCS doesn't like the Verilator clock gate
+-   // Delays clock edge too much when CE is a register
+-   // Blocking assignment makes behavior deterministic
+    always @(posedge I or negedge I) begin
+      if (CE)
+        O = I;
+      else
+        O = 1'h0;
+    end
+-`endif
+ endmodule
+diff --git a/sim/src/main/scala/fasedtests/AXI4Fuzzer.scala b/sim/src/main/scala/fasedtests/AXI4Fuzzer.scala
+index b3c633a2c..57c7f4ac4 100644
+--- a/sim/src/main/scala/fasedtests/AXI4Fuzzer.scala
++++ b/sim/src/main/scala/fasedtests/AXI4Fuzzer.scala
+@@ -31,7 +31,7 @@ class AXI4FuzzerDUT(implicit p: Parameters) extends LazyModule with HasFuzzTarge
+ 
+   val (fuzzers, models) = fuzzerModelPairs.unzip
+   val xbar = AXI4Xbar()
+-  val MemoryPortParams(portParams, nMemoryChannels, _) = p(ExtMem).get
++  val MemoryPortParams(portParams, nMemoryChannels) = p(ExtMem).get
+   val slave  = AXI4SlaveNode(Seq.tabulate(nMemoryChannels){ i =>
+     val base = AddressSet.misaligned(0, (BigInt(1) << p(AddrBits)))
+     val filter = AddressSet(i * p(MaxTransferSize), ~((nMemoryChannels-1) * p(MaxTransferSize)))

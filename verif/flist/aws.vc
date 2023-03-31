@@ -1,0 +1,145 @@
+// TODO: check whether these are reasonable
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
++define+RANDOMIZE_DELAY=0.1
++define+STOP_COND=tb.init_en
++define+PRINTF_COND=tb.init_en
+
++define+AWS
++define+CL_NAME=top
+
++libext+.v+.sv
+
++incdir+$FPGA_HOME/sim
++incdir+$FHDK_HOME/shell_stable/design/interfaces
++incdir+$FHDK_HOME/shell_stable/design/ip/axi_register_slice/hdl
++incdir+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/ip_top
++incdir+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal
++incdir+$FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/map
++incdir+$FHDK_HOME/shell_stable/design/sh_ddr/sim
++incdir+$FHDK_HOME/verif/include
++incdir+$FHDK_HOME/verif/models/fpga
++incdir+$FHDK_HOME/verif/models/ddr4_model
+
+-y $FSIM_HOME/midas/src/main/verilog
+-y $VERIF/../$GEN
+-y $VERIF/../src
+-y $VERIF/src/firesim
+-y $FPGA_HOME
+
+-y $XILINX_VIVADO/data/verilog/src/unisims
+
+-y $FHDK_HOME/shell_stable/design/lib
+-y $FHDK_HOME/shell_stable/design/ip/axi_register_slice/sim
+-y $FHDK_HOME/shell_stable/design/ip/axi_clock_converter_0/sim
+-y $FHDK_HOME/shell_stable/design/ip/cl_debug_bridge/sim
+-y $FHDK_HOME/shell_stable/design/ip/cl_debug_bridge/bd_0/sim
+-y $FHDK_HOME/shell_stable/design/ip/cl_debug_bridge/bd_0/ip/ip_0/sim
+-y $FHDK_HOME/shell_stable/design/ip/cl_debug_bridge/bd_0/ip/ip_1/sim
+-y $FHDK_HOME/shell_stable/design/sh_ddr/sim
+-y $FPGA_HOME/ip/axi_clk_dma/axi_clk_dma.gen/sources_1/ip/axi_clk_dma/sim
+-y $FPGA_HOME/ip/axi_clk_mem/axi_clk_mem.gen/sources_1/ip/axi_clk_mem/sim
+-y $FPGA_HOME/ip/axi_clk_ocl/axi_clk_ocl.gen/sources_1/ip/axi_clk_ocl/sim
+-y $FPGA_HOME/ip/clk_wiz/clk_wiz.gen/sources_1/ip/clk_wiz
+-y $FHDK_HOME/verif/models/ddr4_model
+-y $FHDK_HOME/verif/models/ddr4_rdimm_wrapper
+-y $FHDK_HOME/verif/models/fpga
+-y $FHDK_HOME/verif/models/sh_bfm
+
+$XILINX_VIVADO/data/verilog/src/glbl.v
+
+-y $FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal
+-y $FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/ip_top
+-y $FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/ip_top
+-y $FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/phy
+
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/clocking/ddr4_phy_v2_2_pll.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/iob/ddr4_phy_v2_2_iob.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/iob/ddr4_phy_v2_2_iob_byte.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/ip_1/rtl/phy/ddr4_phy_v2_2_xiphy_behav.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_a_upsizer.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_ar_channel.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_aw_channel.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_b_channel.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_cmd_arbiter.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_cmd_fsm.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_cmd_translator.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_fifo.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_incr_cmd.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_r_channel.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_register_slice.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_upsizer.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_w_channel.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_wr_cmd_fsm.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axi_wrap_cmd.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_axic_register_slice.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_command_fifo.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_r_upsizer.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi/ddr4_v2_2_w_upsizer.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi_ctrl/ddr4_v2_2_axi_ctrl_addr_decode.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi_ctrl/ddr4_v2_2_axi_ctrl_read.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi_ctrl/ddr4_v2_2_axi_ctrl_reg.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi_ctrl/ddr4_v2_2_axi_ctrl_reg_bank.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi_ctrl/ddr4_v2_2_axi_ctrl_top.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/axi_ctrl/ddr4_v2_2_axi_ctrl_write.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_addr_decode.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_config_rom.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_cplx.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_cplx_data.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_debug_microblaze.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_mc_odt.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_pi.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_rd_en.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_read.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_sync.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_top.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_wr_bit.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_wr_byte.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_write.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_xsdb_arbiter.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_cal_xsdb_bram.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_chipscope_xsdb_slave.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/cal/ddr4_v2_2_dp_AB9.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/clocking/ddr4_v2_2_infrastructure.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_act_rank.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_act_timer.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_arb_a.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_arb_c.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_arb_mux_p.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_arb_p.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_cmd_mux_ap.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_cmd_mux_c.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ctl.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ecc.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ecc_buf.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ecc_dec_fix.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ecc_fi_xor.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ecc_gen.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ecc_merge_enc.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_group.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_periodic.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_rd_wr.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_ref.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/controller/ddr4_v2_2_mc_wtr.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/ui/ddr4_v2_2_ui.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/ui/ddr4_v2_2_ui_cmd.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/ui/ddr4_v2_2_ui_rd_data.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/rtl/ui/ddr4_v2_2_ui_wr_data.sv
+$FHDK_HOME/shell_stable/design/ip/ddr4_core/tb/microblaze_mcs_0.sv
+
+$FHDK_HOME/shell_stable/design/ip/axi_register_slice/hdl/axi_register_slice_v2_1_vl_rfs.v
+$FHDK_HOME/shell_stable/design/ip/axi_clock_converter_0/hdl/axi_clock_converter_v2_1_vl_rfs.v
+$FHDK_HOME/shell_stable/design/ip/axi_clock_converter_0/hdl/fifo_generator_v13_2_rfs.v
+
+$FHDK_HOME/verif/models/xilinx_axi_pc/axi_protocol_checker_v1_1_vl_rfs.v
+$FHDK_HOME/verif/models/ddr4_model/ddr4_sdram_model_wrapper.sv
+$FHDK_HOME/verif/tb/sv/tb_type_defines_pkg.sv
+
+$VERIF/../$GEN/Dut.fs.sv
+$VERIF/src/tb.sv
+
+-f $VERIF/flist/aws.vc.dpi

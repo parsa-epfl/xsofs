@@ -1,0 +1,18 @@
+// TODO: check whether these are reasonable
++define+RANDOMIZE_REG_INIT
++define+RANDOMIZE_GARBAGE_ASSIGN
++define+RANDOMIZE_INVALID_ASSIGN
++define+RANDOMIZE_DELAY=0.1
++define+STOP_COND=tb.init_en
++define+PRINTF_COND=tb.init_en
+
++libext+.v+.sv
+-y $FSIM_HOME/midas/src/main/verilog
+-y $VERIF/../$GEN
+-y $VERIF/../src
+-y $VERIF/src/firesim
+
+$VERIF/../$GEN/Dut.fs.sv
+$VERIF/src/tb.sv
+
+-f $VERIF/flist/firesim.vc.dpi
