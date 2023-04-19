@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>

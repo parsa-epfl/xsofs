@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 set name [lindex ${argv} 0]
 
 create_project ${name} . -force -part xcvu9p-flgb2104-2-i

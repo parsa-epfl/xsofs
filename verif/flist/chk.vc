@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 $VERIF/src/diff.cpp
 $VERIF/../$GEN/Dut.cpp
 

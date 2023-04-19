@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 // TODO: check whether these are reasonable
 +define+RANDOMIZE_REG_INIT
 +define+RANDOMIZE_GARBAGE_ASSIGN

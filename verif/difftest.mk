@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 OBJ_DIR  = build/obj-difftest.so
 LIB      = build/difftest.so
 

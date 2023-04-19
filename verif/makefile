@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 export VERIF = $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 export HART ?= 2
 export FPGA ?= 0

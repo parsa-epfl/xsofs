@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 export HART ?= 2
 export FPGA ?= 0
 export CHK  ?= 1

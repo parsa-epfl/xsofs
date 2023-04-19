@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __EMU_H__
 #define __EMU_H__
 

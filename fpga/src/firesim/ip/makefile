@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 IPS = $(filter-out run,$(patsubst %.tcl,%,$(wildcard *.tcl)))
 
 

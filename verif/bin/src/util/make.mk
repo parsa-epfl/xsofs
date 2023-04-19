@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 CC      = riscv64-linux-gnu-gcc
 AS      = riscv64-linux-gnu-as
 LD      = riscv64-linux-gnu-ld

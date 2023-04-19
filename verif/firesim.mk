@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 OBJ_DIR  = build/obj-firesim.so
 LIB      = build/firesim.so
 EXE      = build/firesim

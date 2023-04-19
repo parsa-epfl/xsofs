@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __COMMON_H__
 #define __COMMON_H__
 

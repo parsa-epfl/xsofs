@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 package xsofs
 
 import  scala.annotation.tailrec

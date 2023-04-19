@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 module tb(
 `ifdef VERILATOR
     input  wire clock,

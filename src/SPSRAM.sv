@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 module SPSRAM #(parameter A = 16,
                 parameter D = 32,
                 parameter S = 2

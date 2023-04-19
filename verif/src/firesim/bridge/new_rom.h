@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __NEW_ROM_H__
 #define __NEW_ROM_H__
 

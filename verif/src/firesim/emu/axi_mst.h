@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __AXI_MST_H__
 #define __AXI_MST_H__
 

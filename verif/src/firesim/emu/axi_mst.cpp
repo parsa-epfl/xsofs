@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #include "axi_mst.h"
 
 

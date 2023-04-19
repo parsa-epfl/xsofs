@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 module aws(
     input wire clock,
     input wire reset

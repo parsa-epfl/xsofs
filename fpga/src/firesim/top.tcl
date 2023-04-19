@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 set SRC $::env(SRC)
 set HDK $::env(HDK)
 set DUT [lindex ${argv} 0]

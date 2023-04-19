@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 proc report {step {dcp {yes}} {syn {yes}}} {
     if {${dcp} == {yes}} {
         write_checkpoint -force ${step}.dcp

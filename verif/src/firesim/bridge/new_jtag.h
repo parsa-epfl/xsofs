@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __NEW_JTAG_H__
 #define __NEW_JTAG_H__
 

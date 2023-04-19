@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 .global _entry
 
 .section .text

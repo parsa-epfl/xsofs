@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

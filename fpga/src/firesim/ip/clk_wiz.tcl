@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 create_ip -name clk_wiz -vendor xilinx.com -library ip -version 6.0 -module_name clk_wiz
 
 set_property -dict [list                         \

@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 package xsofs.firesim
 import  xsofs.util._
 

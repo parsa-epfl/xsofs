@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 import mill._
 import mill.modules._
 import mill.scalalib._

@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 proc get_high_fanout_nets {top min {max 100000}} {
     # TODO: -cells doesn't work
     set out [split [report_high_fanout_nets         \

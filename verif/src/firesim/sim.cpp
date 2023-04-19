@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #include <string>
 
 #include "Dut.fs.const.h"

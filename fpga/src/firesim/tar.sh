@@ -1,4 +1,6 @@
 #!/bin/bash
+#
+# See LICENSE.md for license details
 
 set -e
 

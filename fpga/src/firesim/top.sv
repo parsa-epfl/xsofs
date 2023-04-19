@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 module top(
 `include "cl_ports.vh"
 );

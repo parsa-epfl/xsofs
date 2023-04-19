@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 module addr_gen
 #(parameter A = 16)
 (

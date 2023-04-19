@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 export FSIM  = $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 export SRC  ?= $(FSIM)/../../../src
 export GEN  ?= $(FSIM)/../../../gen.fs

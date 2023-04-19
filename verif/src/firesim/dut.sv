@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 module dut(
     input wire clock,
     input wire reset

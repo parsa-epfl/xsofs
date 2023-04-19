@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __AXI_SLV_H__
 #define __AXI_SLV_H__
 

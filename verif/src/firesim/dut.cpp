@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #include "emu.h"
 
 #define MASK_ADDR ((1lu << MEM_ADDR_BITS) - 1lu)

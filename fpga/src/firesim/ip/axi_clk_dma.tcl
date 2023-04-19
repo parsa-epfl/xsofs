@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 create_ip -name axi_clock_converter -vendor xilinx.com -library ip -version 2.1 -module_name axi_clk_dma
 
 set_property -dict [list  \

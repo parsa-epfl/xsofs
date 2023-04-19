@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __NEW_UART_H__
 #define __NEW_UART_H__
 

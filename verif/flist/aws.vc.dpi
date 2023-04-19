@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 $VERIF/src/firesim/aws.cpp
 
 $FSIM_HOME/build/firesim.so

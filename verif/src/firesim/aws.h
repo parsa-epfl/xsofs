@@ -1,3 +1,5 @@
+// See LICENSE.md for license details
+
 #ifndef __AWS_H__
 #define __AWS_H__
 

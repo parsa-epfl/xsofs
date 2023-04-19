@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 # core 0
 create_pblock pblock_c0
 

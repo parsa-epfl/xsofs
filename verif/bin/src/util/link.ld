@@ -1,3 +1,5 @@
+# See LICENSE.md for license details
+
 OUTPUT_ARCH(RISCV)
 
 ENTRY(_entry)
