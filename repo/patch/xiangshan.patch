@@ -1,5 +1,5 @@
 diff --git a/src/main/scala/system/SoC.scala b/src/main/scala/system/SoC.scala
-index a6ff93df2..063ae9aa2 100644
+index a6ff93df2..3eba185aa 100644
 --- a/src/main/scala/system/SoC.scala
 +++ b/src/main/scala/system/SoC.scala
 @@ -21,7 +21,7 @@ import chisel3._
@@ -49,7 +49,17 @@ index a6ff93df2..063ae9aa2 100644
    L3NBanks: Int = 4,
    L3CacheParamsOpt: Option[HCCacheParameters] = Some(HCCacheParameters(
      name = "l3",
-@@ -115,7 +138,6 @@ trait HaveSlaveAXI4Port {
+@@ -84,6 +107,9 @@ abstract class BaseSoC()(implicit p: Parameters) extends LazyModule with HasSoCP
+   val peripheralXbar = TLXbar()
+   val l3_xbar = TLXbar()
+   val l3_banked_xbar = TLXbar()
++
++  val clint: CLINT
++  val plic:  TLPLIC
+ }
+ 
+ // We adapt the following three traits from rocket-chip.
+@@ -115,7 +141,6 @@ trait HaveSlaveAXI4Port {
      AXI4UserYanker(Some(1)) :=
      AXI4Fragmenter() :=
      AXI4Buffer() :=
@@ -57,7 +67,7 @@ index a6ff93df2..063ae9aa2 100644
      AXI4IdIndexer(1) :=
      l3FrontendAXI4Node
    errorDevice.node := l3_xbar
-@@ -150,26 +172,24 @@ trait HaveAXI4MemPort {
+@@ -150,26 +175,24 @@ trait HaveAXI4MemPort {
    val mem_xbar = TLXbar()
    mem_xbar :=*
      TLXbar() :=*
@@ -89,7 +99,7 @@ index a6ff93df2..063ae9aa2 100644
      mem_xbar
  
    val memory = InModuleBody {
-@@ -181,7 +201,7 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
+@@ -181,7 +204,7 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
    // on-chip devices: 0x3800_0000 - 0x3fff_ffff 0x0000_0000 - 0x0000_0fff
    val onChipPeripheralRange = AddressSet(0x38000000L, 0x07ffffffL)
    val uartRange = AddressSet(0x40600000, 0xf)
@@ -98,7 +108,7 @@ index a6ff93df2..063ae9aa2 100644
    val uartParams = AXI4SlaveParameters(
      address = Seq(uartRange),
      regionType = RegionType.UNCACHED,
-@@ -189,6 +209,15 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
+@@ -189,6 +212,15 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
      supportsWrite = TransferSizes(1, 8),
      resources = uartDevice.reg
    )
@@ -114,7 +124,7 @@ index a6ff93df2..063ae9aa2 100644
    val peripheralRange = AddressSet(
      0x0, 0x7fffffff
    ).subtract(onChipPeripheralRange).flatMap(x => x.subtract(uartRange))
-@@ -204,15 +233,12 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
+@@ -204,15 +236,12 @@ trait HaveAXI4PeripheralPort { this: BaseSoC =>
    )))
  
    peripheralNode :=
@@ -132,7 +142,7 @@ index a6ff93df2..063ae9aa2 100644
      peripheralXbar
  
    val peripheral = InModuleBody {
-@@ -235,23 +261,23 @@ class SoCMisc()(implicit p: Parameters) extends BaseSoC
+@@ -235,23 +264,23 @@ class SoCMisc()(implicit p: Parameters) extends BaseSoC
    val l3_mem_pmu = BusPerfMonitor(enable = !debugOpts.FPGAPlatform)
  
    l3_in :*= TLEdgeBuffer(_ => true, Some("L3_in_buffer")) :*= l3_banked_xbar
@@ -160,7 +170,7 @@ index a6ff93df2..063ae9aa2 100644
  
    val clint = LazyModule(new CLINT(CLINTParams(0x38000000L), 8))
    clint.node := peripheralXbar
-@@ -286,7 +312,7 @@ class SoCMisc()(implicit p: Parameters) extends BaseSoC
+@@ -286,7 +315,7 @@ class SoCMisc()(implicit p: Parameters) extends BaseSoC
  
    val pma = LazyModule(new TLPMA)
    pma.node := 
